@@ -191,6 +191,7 @@ function renderContent() {
   }
 
   if (state.meta && state.meta.error && !state.events.length) {
+    document.getElementById('sync-modal').hidden = false;
     el.content.innerHTML = `
       <p class="empty"><span class="big">⚠️</span>
       Impossible de charger l'emploi du temps.<br>${escapeHtml(state.meta.error)}</p>`;
@@ -416,7 +417,7 @@ syncCloseBtn.addEventListener('click', () => { syncModal.hidden = true; });
 let pollInterval = null;
 function pollSync() {
   const email = localStorage.getItem('auriga_email') || 'mathis.derory@ipsa.fr';
-  fetch(/api/sync/status?email=).then(r => r.json()).then(st => {
+  fetch(`/api/sync/status?email=${encodeURIComponent(email)}`).then(r => r.json()).then(st => {
     if (st.status === 'idle') { syncStatus.textContent = 'En attente...'; }
     else if (st.status === 'logging_in') { syncStatus.textContent = 'Connexion  Microsoft en cours...'; }
     else if (st.status === 'waiting_2fa') {
