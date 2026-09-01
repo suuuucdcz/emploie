@@ -56,7 +56,9 @@ def load_config(argv=None):
 
     if os.environ.get("AURIGA_ICS_URL"):
         config["ics_url"] = os.environ["AURIGA_ICS_URL"]
-    if os.environ.get("AURIGA_PORT"):
+    if os.environ.get("PORT"):
+        config["port"] = int(os.environ["PORT"])
+    elif os.environ.get("AURIGA_PORT"):
         config["port"] = int(os.environ["AURIGA_PORT"])
 
     parser = argparse.ArgumentParser(description="Emploi du temps Auriga")
