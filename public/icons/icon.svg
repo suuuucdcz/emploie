@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Emploi du temps">
+  <rect width="512" height="512" rx="112" fill="#1f5fd0"/>
+  <rect x="104" y="132" width="304" height="268" rx="34" fill="#ffffff"/>
+  <rect x="104" y="132" width="304" height="66" rx="34" fill="#dbe6fb"/>
+  <rect x="104" y="176" width="304" height="22" fill="#dbe6fb"/>
+  <rect x="160" y="102" width="26" height="72" rx="13" fill="#0f3f9c"/>
+  <rect x="326" y="102" width="26" height="72" rx="13" fill="#0f3f9c"/>
+  <rect x="146" y="238" width="94" height="26" rx="9" fill="#1f5fd0"/>
+  <rect x="264" y="238" width="104" height="26" rx="9" fill="#9db8ea"/>
+  <rect x="146" y="292" width="130" height="26" rx="9" fill="#9db8ea"/>
+  <rect x="300" y="292" width="68" height="26" rx="9" fill="#1f5fd0"/>
+  <rect x="146" y="346" width="80" height="26" rx="9" fill="#9db8ea"/>
+</svg>

@@ -1,0 +1,7 @@
+{
+  "_comment": "Copie ce fichier en config.json et colle ton URL ICS Aurion dans ics_url. config.json est ignore par git : ce lien vaut un mot de passe, ne le partage pas.",
+  "ics_url": "",
+  "port": 8787,
+  "refresh_seconds": 900,
+  "timeout_seconds": 20
+}

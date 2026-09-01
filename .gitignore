@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local data & caches
+cache/
+planning_capture.json
+session_state.json
+mon_agenda_genere.ics
+
+# OS files
+.DS_Store
+Thumbs.db
