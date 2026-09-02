@@ -491,3 +491,18 @@ if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   });
 }
+
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredPrompt = e;
+  const btn = document.createElement('button');
+  btn.className = 'btn-primary';
+  btn.textContent = 'Installer l\'application sur le téléphone';
+  btn.style.margin = '20px';
+  btn.onclick = () => {
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(() => { btn.remove(); deferredPrompt = null; });
+  };
+  document.getElementById('content').prepend(btn);
+});
