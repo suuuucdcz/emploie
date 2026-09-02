@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0b1220">
   <title>Emploi du temps</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="EDT">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
@@ -44,7 +47,7 @@
       <h2 style="margin: 0; font-size: 18px;">Mettre à jour via Microsoft</h2>
       <p style="font-size: 14px; color: var(--muted); margin-bottom: 10px;">Le serveur en arrière-plan va se connecter silencieusement pour aspirer ton année.</p>
       
-      <input type="email" id="sync-email" placeholder="Email de l'école" value="mathis.derory@ipsa.fr" />
+      <input type="email" id="sync-email" placeholder="Email de l'école" />
       <input type="password" id="sync-password" placeholder="Mot de passe" />
       
       <button id="sync-start-btn" class="btn-primary">Lancer la récupération</button>

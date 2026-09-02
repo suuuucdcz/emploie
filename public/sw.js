@@ -1,7 +1,7 @@
 /* Service worker : coquille applicative en cache, agenda en reseau d'abord. */
 
-const SHELL_CACHE = 'auriga-shell-v4';
-const DATA_CACHE = 'auriga-data-v4';
+const SHELL_CACHE = 'auriga-shell-v5';
+const DATA_CACHE = 'auriga-data-v5';
 
 const SHELL = [
   '/',
