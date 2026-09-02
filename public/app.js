@@ -5,12 +5,16 @@ const KIND_LABEL = {
   CM: 'CM', TD: 'TD', TP: 'TP', EXAM: 'EXAMEN', PROJET: 'PROJET', AUTRE: 'COURS',
 };
 
+const TICK_MS = 30000;        // cadence du direct
+const GAP_MIN_MINUTES = 20;   // en deca, un trou entre deux cours n'est pas une pause
+
 const state = {
   events: [],
   selected: startOfDay(new Date()),
   view: 'day',
   meta: null,
   loading: false,
+  liveSignature: '',
 };
 
 const el = {
@@ -176,6 +180,7 @@ async function load({ force = false } = {}) {
 /* ------------------------------------------------------------------- rendu */
 
 function render() {
+  state.liveSignature = liveSignature(new Date());
   renderHeader();
   renderStrip();
   renderContent();
@@ -238,11 +243,12 @@ function renderContent() {
 }
 
 function renderDay() {
+  const now = new Date();
   const events = eventsOn(state.selected);
-  const isToday = sameDay(state.selected, startOfDay(new Date()));
+  const isToday = sameDay(state.selected, startOfDay(now));
 
   if (isToday) {
-    const banner = nextCourseBanner();
+    const banner = nextCourseBanner(now);
     if (banner) el.content.appendChild(banner);
   }
 
@@ -254,11 +260,45 @@ function renderDay() {
     return;
   }
 
-  events.forEach((evt) => el.content.appendChild(card(evt)));
+  // Le repere \u00AB maintenant \u00BB ne sert que si on est entre deux cours : pendant
+  // un cours, la barre de progression de la carte dit deja ou on en est.
+  let markerPlaced = !isToday || Boolean(ongoingEvent(now));
+
+  events.forEach((evt, index) => {
+    if (!markerPlaced && now < evt._start) {
+      el.content.appendChild(nowMarker(now));
+      markerPlaced = true;
+    }
+    el.content.appendChild(card(evt, now));
+
+    const next = events[index + 1];
+    if (next) {
+      const gap = Math.round((next._start - evt._end) / 60000);
+      if (gap >= GAP_MIN_MINUTES) el.content.appendChild(gapRow(gap));
+    }
+  });
 }
 
+function nowMarker(now) {
+  const node = document.createElement('div');
+  node.className = 'now-marker';
+  node.innerHTML = `<span class="now-marker-time" data-live="now-time">${fmtTime(now)}</span>`;
+  return node;
+}
+
+function gapRow(minutes) {
+  const node = document.createElement('div');
+  node.className = 'gap';
+  node.innerHTML = `<span>${durationLabel(minutes)} de libre</span>`;
+  return node;
+}
+
+// La semaine sert a repondre \u00AB c'est quand, mon prochain TP ? \u00BB : on veut de la
+// densite, pas le detail. Les cartes completes restent la vue jour.
 function renderWeek() {
   const monday = mondayOf(state.selected);
+  const now = new Date();
+  const today = startOfDay(now);
   let total = 0;
 
   for (let i = 0; i < 7; i += 1) {
@@ -269,9 +309,14 @@ function renderWeek() {
 
     const heading = document.createElement('div');
     heading.className = 'day-heading';
+    if (sameDay(day, today)) heading.classList.add('is-today');
     heading.textContent = fmtDayLong(day);
     el.content.appendChild(heading);
-    events.forEach((evt) => el.content.appendChild(card(evt)));
+
+    const list = document.createElement('div');
+    list.className = 'week-list';
+    events.forEach((evt) => list.appendChild(weekRow(evt, now)));
+    el.content.appendChild(list);
   }
 
   if (!total) {
@@ -282,19 +327,57 @@ function renderWeek() {
   }
 }
 
-function card(evt) {
-  const now = new Date();
+function weekRow(evt, now) {
   const ongoing = evt._start <= now && now < evt._end;
+  const past = evt._end <= now;
+
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = `week-row${ongoing ? ' now' : ''}${past ? ' past' : ''}`;
+  row.style.setProperty('--kind', `var(--${evt.kind.toLowerCase()})`);
+
+  const details = [KIND_LABEL[evt.kind] || 'COURS'];
+  if (evt.location) details.push(evt.location);
+
+  row.innerHTML = `
+    <span class="week-row-time">
+      <span class="start">${evt.allDay ? 'Jour' : fmtTime(evt._start)}</span>
+      <span class="end">${evt.allDay ? 'entier' : fmtTime(evt._end)}</span>
+    </span>
+    <span class="week-row-main">
+      <span class="week-row-title">${escapeHtml(evt.title || evt.rawTitle || 'Cours')}</span>
+      <span class="week-row-sub">${escapeHtml(details.join(' \u00B7 '))}</span>
+    </span>
+    ${ongoing ? '<span class="week-row-live">EN COURS</span>' : ''}`;
+
+  // Un appui ouvre la journee complete : la vue semaine reste un index.
+  row.addEventListener('click', () => {
+    state.selected = startOfDay(evt._start);
+    state.view = 'day';
+    render();
+    el.content.scrollIntoView({ block: 'start' });
+  });
+  return row;
+}
+
+function card(evt, now = new Date()) {
+  const ongoing = evt._start <= now && now < evt._end;
+  // On ne grise que la journee en cours : sur un jour passe, tout serait
+  // efface et la page aurait l'air cassee.
+  const past = evt._end <= now && sameDay(evt._start, startOfDay(now));
   const minutes = Math.round((evt._end - evt._start) / 60000);
 
   const node = document.createElement('article');
-  node.className = `card${ongoing ? ' now' : ''}`;
+  node.className = `card${ongoing ? ' now' : ''}${past ? ' past' : ''}`;
   node.style.setProperty('--kind', `var(--${evt.kind.toLowerCase()})`);
 
   const meta = [];
   if (evt.location) meta.push(`<span>\uD83D\uDCCD ${escapeHtml(evt.location)}</span>`);
   if (evt.teacher) meta.push(`<span>\uD83D\uDC64 ${escapeHtml(evt.teacher)}</span>`);
-  meta.push(`<span>\u23F1 ${durationLabel(minutes)}</span>`);
+  // Pendant le cours, le temps restant est plus utile que la duree totale.
+  meta.push(ongoing
+    ? `<span class="meta-live">\u23F3 ${remainingSpan(evt)}</span>`
+    : `<span>\u23F1 ${durationLabel(minutes)}</span>`);
 
   node.innerHTML = `
     <div class="card-time">
@@ -302,39 +385,118 @@ function card(evt) {
       <span class="end">${evt.allDay ? 'entier' : fmtTime(evt._end)}</span>
     </div>
     <div class="card-body">
-      <span class="badge">${KIND_LABEL[evt.kind] || 'COURS'}</span>
-      ${ongoing ? '<span class="badge now-badge">EN COURS</span>' : ''}
+      <div class="card-badges">
+        <span class="badge">${KIND_LABEL[evt.kind] || 'COURS'}</span>
+        ${ongoing ? '<span class="badge now-badge">EN COURS</span>' : ''}
+      </div>
       <h2 class="card-title">${escapeHtml(evt.title || evt.rawTitle || 'Cours')}</h2>
       <div class="card-meta">${meta.join('')}</div>
-    </div>`;
+    </div>
+    ${ongoing ? progressBar(evt, now) : ''}`;
   return node;
 }
 
-function nextCourseBanner() {
-  const now = new Date();
-  const ongoing = state.events.find((evt) => evt._start <= now && now < evt._end);
-  const upcoming = state.events.find((evt) => evt._start > now);
+function nextCourseBanner(now) {
+  const ongoing = ongoingEvent(now);
+  const upcoming = nextEvent(now);
 
   const banner = document.createElement('div');
   banner.className = 'next-banner';
 
   if (ongoing) {
-    const left = Math.round((ongoing._end - now) / 60000);
-    banner.innerHTML = `En cours : <strong>${escapeHtml(ongoing.title)}</strong>
-      ${ongoing.location ? `\u00B7 ${escapeHtml(ongoing.location)}` : ''}
-      <span class="when">fin dans ${durationLabel(left)}</span>`;
+    banner.classList.add('is-ongoing');
+    banner.innerHTML = `
+      <span class="next-banner-label">En cours</span>
+      <strong>${escapeHtml(ongoing.title)}</strong>
+      ${ongoing.location ? `<span class="next-banner-place">\uD83D\uDCCD ${escapeHtml(ongoing.location)}</span>` : ''}
+      ${progressBar(ongoing, now)}
+      <span class="when">${remainingSpan(ongoing)}</span>`;
     return banner;
   }
 
   if (upcoming && sameDay(upcoming._start, startOfDay(now))) {
-    const inMinutes = Math.round((upcoming._start - now) / 60000);
-    banner.innerHTML = `Prochain cours : <strong>${escapeHtml(upcoming.title)}</strong>
-      ${upcoming.location ? `\u00B7 ${escapeHtml(upcoming.location)}` : ''}
-      <span class="when">dans ${durationLabel(inMinutes)}</span>`;
+    banner.innerHTML = `
+      <span class="next-banner-label">Prochain cours</span>
+      <strong>${escapeHtml(upcoming.title)}</strong>
+      ${upcoming.location ? `<span class="next-banner-place">\uD83D\uDCCD ${escapeHtml(upcoming.location)}</span>` : ''}
+      <span class="when" data-live="countdown" data-start="${upcoming._start.getTime()}">${countdownLabel(upcoming._start, now)}</span>`;
     return banner;
   }
 
   return null;
+}
+
+/* ------------------------------------------------------------- le direct */
+
+function ongoingEvent(now) {
+  return state.events.find((evt) => evt._start <= now && now < evt._end) || null;
+}
+
+function nextEvent(now) {
+  return state.events.find((evt) => evt._start > now) || null;
+}
+
+function remainingLabel(end, now) {
+  const minutes = Math.round((end - now) / 60000);
+  return minutes <= 0 ? 'termine' : `il reste ${durationLabel(minutes)}`;
+}
+
+function countdownLabel(start, now) {
+  const minutes = Math.round((start - now) / 60000);
+  return minutes <= 0 ? '\u00E7a commence' : `dans ${durationLabel(minutes)}`;
+}
+
+function remainingSpan(evt) {
+  return `<span data-live="remaining" data-end="${evt._end.getTime()}">${
+    remainingLabel(evt._end, new Date())}</span>`;
+}
+
+function progressBar(evt, now) {
+  const pct = ratio(evt._start.getTime(), evt._end.getTime(), now) * 100;
+  return `<div class="progress" data-live="progress"
+       data-start="${evt._start.getTime()}" data-end="${evt._end.getTime()}"
+       role="progressbar" aria-valuemin="0" aria-valuemax="100"
+       aria-valuenow="${Math.round(pct)}" aria-label="Avancement du cours"
+     ><span class="progress-fill" style="width:${pct.toFixed(1)}%"></span></div>`;
+}
+
+function ratio(start, end, now) {
+  if (end <= start) return 0;
+  return Math.min(1, Math.max(0, (now - start) / (end - start)));
+}
+
+// Empreinte de l'etat \u00AB direct \u00BB : tant qu'elle ne change pas, la structure de
+// la page est bonne et il suffit d'animer les elements vivants.
+function liveSignature(now) {
+  const ongoing = ongoingEvent(now);
+  const upcoming = nextEvent(now);
+  return `${ongoing ? ongoing.uid : '-'}|${upcoming ? upcoming.uid : '-'}`;
+}
+
+function updateLive(now) {
+  document.querySelectorAll('[data-live="progress"]').forEach((node) => {
+    const pct = ratio(Number(node.dataset.start), Number(node.dataset.end), now) * 100;
+    node.firstElementChild.style.width = `${pct.toFixed(1)}%`;
+    node.setAttribute('aria-valuenow', String(Math.round(pct)));
+  });
+  document.querySelectorAll('[data-live="remaining"]').forEach((node) => {
+    node.textContent = remainingLabel(Number(node.dataset.end), now);
+  });
+  document.querySelectorAll('[data-live="countdown"]').forEach((node) => {
+    node.textContent = countdownLabel(Number(node.dataset.start), now);
+  });
+  const marker = document.querySelector('[data-live="now-time"]');
+  if (marker) marker.textContent = fmtTime(now);
+}
+
+function tick() {
+  const now = new Date();
+  // Un cours vient de commencer ou de finir : la page change de forme.
+  if (liveSignature(now) !== state.liveSignature) {
+    render();
+    return;
+  }
+  updateLive(now);
 }
 
 function renderStatus() {
@@ -408,9 +570,11 @@ el.content.addEventListener('touchend', (event) => {
   }
 }, { passive: true });
 
+// Rythme du direct : on redessine seulement si un cours a change d'etat,
+// sinon on se contente de faire avancer la barre et les compteurs.
 setInterval(() => {
-  if (!state.loading) render();
-}, 60000);
+  if (!state.loading) tick();
+}, TICK_MS);
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
@@ -472,7 +636,14 @@ function finishSync(message, { reload = false } = {}) {
   showA2fCode(null);
   sync.status.textContent = message;
   sync.startBtn.disabled = false;
-  if (reload) setTimeout(() => { sync.modal.hidden = true; location.reload(); }, 2000);
+  // Relire l'agenda suffit : recharger toute la page reinitialiserait le jour
+  // affiche et ferait reclignoter l'interface.
+  if (reload) {
+    setTimeout(() => {
+      sync.modal.hidden = true;
+      load({ force: true });
+    }, 1500);
+  }
 }
 
 function applySyncState(st) {
