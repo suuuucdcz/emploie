@@ -85,9 +85,14 @@ body {
   font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  text-transform: capitalize;
   min-width: 130px;
   text-align: center;
+}
+
+/* `capitalize` majusculait chaque mot : « Semaine Du 31 Août ». En francais
+   seule l'initiale se met en capitale. */
+.topbar h1::first-letter {
+  text-transform: uppercase;
 }
 
 .month-nav {

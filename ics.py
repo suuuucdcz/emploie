@@ -306,9 +306,36 @@ _KINDS = [
 ]
 
 
+# Aurion prefixe le libelle par le code exact du type ("TD - Bases de
+# donnees"). Cette information est fiable, contrairement a la recherche de
+# mots-cles : un TD intitule "Bases de donnees et projet" etait classe PROJET
+# parce que le nom de la matiere contient le mot.
+_PREFIX_CODES = {
+    "CM": "CM", "COURS": "CM", "AMPHI": "CM",
+    "TD": "TD",
+    "TP": "TP",
+    "EXAM": "EXAM", "EXAMEN": "EXAM", "DS": "EXAM", "PARTIEL": "EXAM",
+    "PROJET": "PROJET", "PRJ": "PROJET", "SOUT": "PROJET",
+}
+
+
+def _type_prefix(summary):
+    """Code de type en tete de libelle, ou None."""
+    for sep in (" - ", " : ", " – ", " | "):
+        head, found, tail = summary.partition(sep)
+        if found and tail.strip():
+            return _PREFIX_CODES.get(head.strip().upper())
+    return None
+
+
 def _guess_kind(summary, description, categories):
-    """Devine CM/TD/TP/exam. Heuristique prudente : sans correspondance on
-    renvoie AUTRE et l'interface affiche le libelle brut."""
+    """Devine CM/TD/TP/exam. Le prefixe de type fait foi ; a defaut seulement,
+    on cherche des mots-cles. Sans correspondance on renvoie AUTRE et
+    l'interface affiche le libelle brut."""
+    prefix = _type_prefix(summary)
+    if prefix:
+        return prefix
+
     haystack = " %s %s %s " % (summary, description, categories)
     haystack = haystack.lower()
     for kind, needles in _KINDS:
