@@ -39,6 +39,25 @@ MAX_BODY_BYTES = 4096
 # Un utilisateur = une entree de cache. Garde-fou memoire.
 MAX_CACHED_USERS = 100
 
+# mimetypes lit la base de registre sous Windows, ou `.js` est parfois declare
+# en text/plain — ce qui suffit a faire refuser le service worker par le
+# navigateur, et donc a empecher l'installation de la PWA. On tranche ici.
+MIME_OVERRIDES = {
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".css": "text/css",
+    ".html": "text/html; charset=utf-8",
+    ".json": "application/json",
+    ".webmanifest": "application/manifest+json",
+    ".svg": "image/svg+xml",
+}
+
+# Ressources dont le nom ne change jamais mais le contenu si : il faut
+# revalider a chaque fois. Le 304 qui en resulte ne coute presque rien, et
+# c'est ce qui evite d'avoir a renommer les caches a chaque deploiement.
+ASSET_MAX_AGE = 86400
+REVALIDATE_SUFFIXES = (".html", ".js", ".css", ".webmanifest", ".json")
+
 _registry_lock = threading.Lock()
 _caches = {}
 
@@ -218,18 +237,32 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
             return
 
-        ctype, _ = mimetypes.guess_type(target)
-        if target.endswith(".webmanifest"):
-            ctype = "application/manifest+json"
+        stat = os.stat(target)
+        etag = '"%x-%x"' % (int(stat.st_mtime), stat.st_size)
+        extension = os.path.splitext(target)[1].lower()
+
+        if extension in REVALIDATE_SUFFIXES:
+            cache_control = "no-cache"
+        else:
+            cache_control = "public, max-age=%d" % ASSET_MAX_AGE
+
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", cache_control)
+            self.end_headers()
+            return
+
+        ctype = MIME_OVERRIDES.get(extension) or mimetypes.guess_type(target)[0]
         with open(target, "rb") as handle:
             body = handle.read()
 
         self.send_response(200)
         self.send_header("Content-Type", ctype or "application/octet-stream")
         self.send_header("Content-Length", str(len(body)))
-        # le service worker doit pouvoir se mettre a jour sans vider le cache
-        if target.endswith("sw.js"):
-            self.send_header("Cache-Control", "no-cache")
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", cache_control)
+        self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
         self.end_headers()
         self.wfile.write(body)
 

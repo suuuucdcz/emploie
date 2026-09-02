@@ -103,10 +103,15 @@ function hydrate(payload) {
   };
 }
 
+// Le cache porte l'email auquel il appartient : sur un telephone partage, ou
+// apres un changement de compte, on ne doit pas afficher l'agenda d'un autre.
 function readCache() {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (!entry || entry.email !== getUserEmail()) return null;
+    return entry.payload;
   } catch (err) {
     return null;
   }
@@ -114,11 +119,18 @@ function readCache() {
 
 function writeCache(payload) {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ email: getUserEmail(), payload }));
   } catch (err) {
     /* quota plein ou navigation privee */
   }
 }
+
+// Le serveur ne rafraichit son propre cache que toutes les 15 min : recharger
+// plus souvent renverrait les memes octets. Sur un agenda d'annee complete la
+// reponse depasse 250 Ko, autant ne pas la retelecharger a chaque fois que
+// l'utilisateur revient dans l'appli.
+const VISIBILITY_RELOAD_MS = 5 * 60 * 1000;
+let lastLoadAt = 0;
 
 async function load({ force = false } = {}) {
   const email = getUserEmail();
@@ -132,6 +144,9 @@ async function load({ force = false } = {}) {
     return;
   }
 
+  // Pose avant l'attente : deux retours rapproches ne doivent pas lancer deux
+  // requetes concurrentes.
+  lastLoadAt = Date.now();
   state.loading = true;
   el.refresh.classList.add('spinning');
   try {
@@ -142,6 +157,7 @@ async function load({ force = false } = {}) {
     hydrate(payload);
     writeCache(payload);
   } catch (err) {
+    lastLoadAt = 0;  // l'appel a echoue : la prochaine occasion doit reessayer
     const cached = readCache();
     if (cached) {
       hydrate(cached);
@@ -365,6 +381,13 @@ el.prevBtn.addEventListener('click', () => step(-1));
 el.nextBtn.addEventListener('click', () => step(1));
 
 document.addEventListener('keydown', (event) => {
+  // Ne pas changer de jour pendant que l'utilisateur deplace le curseur dans
+  // un champ, ni pendant que la modal de synchronisation est ouverte.
+  const target = event.target;
+  if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
+      || target.isContentEditable)) return;
+  if (!sync.modal.hidden) return;
+
   if (event.key === 'ArrowLeft') step(-1);
   else if (event.key === 'ArrowRight') step(1);
 });
@@ -390,7 +413,9 @@ setInterval(() => {
 }, 60000);
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') load();
+  if (document.visibilityState !== 'visible') return;
+  if (Date.now() - lastLoadAt < VISIBILITY_RELOAD_MS) return;
+  load();
 });
 
 /* ------------------------------------------------------------ sync robot */

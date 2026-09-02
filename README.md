@@ -121,7 +121,13 @@ quiconque connait l'adresse de quelqu'un.
   absent sous Windows).
 - **Cache.** Trois niveaux : memoire serveur (`refresh_seconds`), `localStorage`
   du navigateur, et le service worker. Si le reseau tombe, la derniere version
-  connue est servie et marquee « donnees en cache » plutot qu'une erreur.
+  connue est servie et marquee « donnees en cache » plutot qu'une erreur. Le
+  cache navigateur porte l'email auquel il appartient : changer de compte
+  n'affiche jamais l'agenda du precedent.
+- **Mise a jour des fichiers.** Les fichiers statiques sont servis avec un
+  `ETag` et `Cache-Control: no-cache` : le navigateur revalide et recoit un 304
+  tant que rien n'a change. Inutile de renommer les caches du service worker a
+  chaque deploiement pour forcer les telephones a se mettre a jour.
 - **Types de cours.** CM / TD / TP / examen / projet sont devines depuis le
   libelle et la description, avec un code couleur. Si l'heuristique ne reconnait
   rien, le libelle brut est affiche tel quel — rien n'est masque.
