@@ -423,13 +423,15 @@ function pollSync() {
       if (st.status === 'idle') {
         syncStatus.textContent = 'En attente...';
       } else if (st.status === 'logging_in') {
-        syncStatus.textContent = 'Connexion \u00E0 Microsoft en cours...';
+        syncStatus.textContent = st.detail || 'Connexion \u00E0 Microsoft en cours...';
       } else if (st.status === 'waiting_2fa') {
-        syncStatus.textContent = 'Tapez ce num\u00E9ro sur votre t\u00E9l\u00E9phone :';
-        syncA2f.style.display = 'block';
-        syncA2f.textContent = st.code;
+        syncStatus.textContent = st.detail || 'Tapez ce num\u00E9ro sur votre t\u00E9l\u00E9phone :';
+        if (st.code) {
+          syncA2f.style.display = 'block';
+          syncA2f.textContent = st.code;
+        }
       } else if (st.status === 'downloading') {
-        syncStatus.textContent = 'T\u00E9l\u00E9chargement en cours...';
+        syncStatus.textContent = st.detail || 'T\u00E9l\u00E9chargement en cours...';
         syncA2f.style.display = 'none';
       } else if (st.status === 'success') {
         syncStatus.textContent = 'Termin\u00E9 ! Le planning est \u00E0 jour.';
@@ -438,10 +440,11 @@ function pollSync() {
         pollInterval = null;
         setTimeout(() => { syncModal.hidden = true; location.reload(); }, 2000);
       } else if (st.status === 'error') {
-        syncStatus.textContent = 'Erreur : ' + st.error_msg;
+        syncStatus.textContent = 'Erreur : ' + (st.error_msg || 'inconnue');
         syncA2f.style.display = 'none';
         clearInterval(pollInterval);
         pollInterval = null;
+        syncStartBtn.disabled = false;
       }
     })
     .catch(() => {

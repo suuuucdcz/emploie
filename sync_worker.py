@@ -96,8 +96,16 @@ def convert_to_ics(data_list, email):
 
 def _run_playwright(email, password):
     global SYNC_STATES
+    def set_status(status, code=None, error_msg=None, detail=None):
+        SYNC_STATES[email]["status"] = status
+        if code is not None: SYNC_STATES[email]["code"] = code
+        if error_msg is not None: SYNC_STATES[email]["error_msg"] = error_msg
+        if detail is not None: SYNC_STATES[email]["detail"] = detail
+        print(f"[sync {email}] {status}: {detail or error_msg or code or ''}")
+
     try:
         with sync_playwright() as playwright:
+            set_status("logging_in", detail="Lancement du navigateur...")
             browser = playwright.chromium.launch(headless=True)
             context = browser.new_context(viewport={"width": 800, "height": 800})
             page = context.new_page()
@@ -110,55 +118,77 @@ def _run_playwright(email, password):
                         token_found[0] = token
             page.on("request", handle_request)
             
-            SYNC_STATES[email]["status"] = "logging_in"
-            page.goto("https://auriga.ipsa.fr/")
+            set_status("logging_in", detail="Ouverture du portail Auriga...")
+            page.goto("https://auriga.ipsa.fr/", timeout=15000)
             
+            set_status("logging_in", detail="Recherche du bouton Microsoft...")
             try:
                 page.locator("text=Microsoft").wait_for(timeout=4000)
                 page.locator("text=Microsoft").first.click()
-            except:
-                pass
+                set_status("logging_in", detail="Clic sur Microsoft OK")
+            except Exception as e:
+                set_status("logging_in", detail=f"Bouton Microsoft non trouve, on continue... ({e})")
 
-            page.locator('input[type="email"]').wait_for(timeout=10000)
-            page.locator('input[type="email"]').fill(email)
-            page.locator('input[type="submit"]').click()
+            set_status("logging_in", detail="Attente du champ email...")
+            try:
+                page.locator('input[type="email"]').wait_for(timeout=10000)
+                page.locator('input[type="email"]').fill(email)
+                page.locator('input[type="submit"]').click()
+                set_status("logging_in", detail="Email envoye, attente mot de passe...")
+            except Exception as e:
+                set_status("error", error_msg=f"Champ email introuvable: {e}")
+                browser.close()
+                return
             
-            page.locator('input[type="password"]').wait_for(timeout=10000)
-            page.locator('input[type="password"]').fill(password)
-            page.locator('input[type="submit"]').click()
+            try:
+                page.locator('input[type="password"]').wait_for(timeout=10000)
+                page.locator('input[type="password"]').fill(password)
+                page.locator('input[type="submit"]').click()
+                set_status("logging_in", detail="Mot de passe envoye, attente A2F...")
+            except Exception as e:
+                set_status("error", error_msg=f"Champ mot de passe introuvable: {e}")
+                browser.close()
+                return
             
+            # Code A2F
             try:
                 a2f_elem = page.locator('.displaySign')
-                a2f_elem.wait_for(timeout=5000)
+                a2f_elem.wait_for(timeout=8000)
                 code = a2f_elem.text_content().strip()
-                SYNC_STATES[email]["status"] = "waiting_2fa"
-                SYNC_STATES[email]["code"] = code
+                set_status("waiting_2fa", code=code, detail=f"Code A2F: {code}")
             except Exception:
-                SYNC_STATES[email]["status"] = "waiting_2fa"
-                SYNC_STATES[email]["code"] = "Approuvez (pas de numéro)"
+                set_status("waiting_2fa", code="Approuvez sur votre telephone", detail="Pas de numero affiche")
 
+            # Rester connecte
+            set_status("waiting_2fa", detail="Attente validation A2F + bouton Rester connecte...")
             try:
                 kmsi = page.locator('input[type="button"][value="Oui"], input[type="submit"][value="Oui"], input[id="idSIButton9"]')
-                kmsi.wait_for(timeout=20000)
+                kmsi.wait_for(timeout=30000)
                 kmsi.click()
-            except:
-                pass
+                set_status("logging_in", detail="Rester connecte: OK")
+            except Exception as e:
+                set_status("logging_in", detail=f"Bouton Rester connecte non trouve: {e}")
 
+            # Mon planning
+            set_status("logging_in", detail="Ouverture de Mon planning...")
             try:
                 planning_link = page.locator('text=Mon planning').first
                 planning_link.wait_for(timeout=10000)
                 planning_link.click()
+                set_status("logging_in", detail="Clic sur Mon planning OK")
             except Exception:
                 page.goto("https://auriga.ipsa.fr/#/mainContent/menuEntry/227/planning")
+                set_status("logging_in", detail="Navigation directe vers le planning")
 
-            timeout = 30
-            while not token_found[0] and timeout > 0:
+            # Attente token
+            set_status("logging_in", detail="Attente du token d'authentification...")
+            timeout_count = 30
+            while not token_found[0] and timeout_count > 0:
                 page.wait_for_timeout(1000)
-                timeout -= 1
+                timeout_count -= 1
                 
             if not token_found[0]:
-                SYNC_STATES[email]["status"] = "error"
-                SYNC_STATES[email]["error_msg"] = "Délai d'attente A2F"
+                set_status("error", error_msg="Token non recupere apres 30s (A2F non validee ?)")
                 browser.close()
                 return
 
