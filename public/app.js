@@ -532,20 +532,73 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-// Android propose l'installation via cet evenement : on le garde pour offrir
-// un bouton explicite plutot que la banniere du navigateur.
+/* ------------------------------------------------------- installation PWA */
+
+const install = {
+  bar: document.getElementById('install-bar'),
+  text: document.getElementById('install-text'),
+  btn: document.getElementById('install-btn'),
+  dismiss: document.getElementById('install-dismiss'),
+};
+
+const INSTALL_DISMISSED_KEY = 'auriga_install_dismissed';
+
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+}
+
+function isIos() {
+  return /iphone|ipad|ipod/i.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function hideInstallBar() {
+  install.bar.hidden = true;
+}
+
+function showInstallBar(message, withButton) {
+  if (isStandalone()) return;                       // deja installee
+  if (localStorage.getItem(INSTALL_DISMISSED_KEY)) return;
+  install.text.textContent = message;
+  install.btn.hidden = !withButton;
+  install.bar.hidden = false;
+}
+
+// Android / Chrome : l'evenement fournit la vraie invite d'installation. On le
+// met de cote pour l'offrir dans notre propre barre — mais cette barre vit en
+// dehors de #content, sinon le prochain render() l'effacerait.
 let deferredPrompt = null;
+
 window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault();
   deferredPrompt = event;
-
-  const btn = document.createElement('button');
-  btn.type = 'button';
-  btn.className = 'btn-primary install-btn';
-  btn.textContent = 'Installer l\'application sur le téléphone';
-  btn.addEventListener('click', () => {
-    deferredPrompt.prompt();
-    deferredPrompt.userChoice.finally(() => { btn.remove(); deferredPrompt = null; });
-  });
-  el.content.prepend(btn);
+  showInstallBar('Installe l\'appli pour l\'ouvrir en plein écran, sans la barre du navigateur.', true);
 });
+
+install.btn.addEventListener('click', async () => {
+  if (!deferredPrompt) return;
+  install.btn.disabled = true;
+  deferredPrompt.prompt();
+  const { outcome } = await deferredPrompt.userChoice;
+  // Une invite ne sert qu'une fois : Chrome en renverra une neuve si besoin.
+  deferredPrompt = null;
+  install.btn.disabled = false;
+  if (outcome === 'accepted') hideInstallBar();
+});
+
+install.dismiss.addEventListener('click', () => {
+  localStorage.setItem(INSTALL_DISMISSED_KEY, '1');
+  hideInstallBar();
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredPrompt = null;
+  hideInstallBar();
+});
+
+// iOS ne declenche jamais beforeinstallprompt : la seule voie est le menu
+// Partager, donc on explique ou cliquer.
+if (isIos() && !isStandalone()) {
+  showInstallBar('Pour installer : appuie sur Partager, puis « Sur l\'écran d\'accueil ».', false);
+}

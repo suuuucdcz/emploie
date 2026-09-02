@@ -456,8 +456,53 @@ body {
 .btn-primary:active { opacity: 0.8; }
 .btn-primary:disabled { opacity: 0.5; cursor: default; }
 
-.install-btn {
-  margin: 20px 0;
-  width: auto;
-  align-self: stretch;
+/* ------------------------------------------------- barre d'installation PWA */
+
+.install-bar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 16px 0;
+  /* marge a droite : la croix est posee dans ce coin */
+  padding: 12px 44px 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow);
+}
+
+.install-bar[hidden] { display: none; }
+
+.install-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.install-bar .btn-primary {
+  padding: 11px 14px;
+  font-size: 15px;
+}
+
+.install-bar .btn-primary[hidden] { display: none; }
+
+.install-dismiss {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 0 9px;
+  font-size: 20px;
+  line-height: 28px;
+}
+
+/* Au-dela du telephone, tout tient sur une ligne. */
+@media (min-width: 560px) {
+  .install-bar {
+    flex-direction: row;
+    align-items: center;
+  }
+  .install-text { flex: 1; }
+  .install-bar .btn-primary { width: auto; flex-shrink: 0; }
 }

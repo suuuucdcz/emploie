@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0b1220">
   <title>Emploi du temps</title>
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="EDT">
@@ -58,6 +59,13 @@
 
       <button id="sync-close-btn" class="btn-ghost sync-close" type="button">Fermer</button>
     </div>
+  </div>
+
+  <!-- Hors de #content : render() vide #content a chaque rendu. -->
+  <div id="install-bar" class="install-bar" hidden>
+    <p id="install-text" class="install-text"></p>
+    <button id="install-btn" class="btn-primary" type="button" hidden>Installer l'application</button>
+    <button id="install-dismiss" class="btn-ghost install-dismiss" type="button" aria-label="Masquer">×</button>
   </div>
 
   <main id="content" class="content" tabindex="-1">

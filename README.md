@@ -62,9 +62,29 @@ Le serveur ecoute sur toutes les interfaces. Sur le meme wifi :
 
 **Limite a connaitre :** en `http://` sur une IP locale, le navigateur refuse
 d'enregistrer le service worker (reserve aux origines securisees). L'appli
-fonctionne, mais **sans cache hors ligne ni vraie installation PWA**. Sur iOS le
-raccourci ecran d'accueil marche quand meme. Pour l'offline complet il faut du
-HTTPS — un tunnel Cloudflare, ou un hebergement.
+fonctionne, mais **sans cache hors ligne ni vraie installation PWA** : Android
+ne proposera qu'un raccourci. Pour une vraie installation il faut du HTTPS —
+un tunnel Cloudflare, ou l'hebergement.
+
+### Installer l'appli (et pas un raccourci)
+
+En HTTPS, une barre « Installer l'application » apparait sous l'entete :
+
+- **Android / Chrome** : le bouton declenche la vraie invite d'installation
+  (WebAPK) — icone adaptative, pas de barre d'adresse, entree dans le tiroir
+  d'applications. C'est different du « Ajouter a l'ecran d'accueil » du menu
+  du navigateur, qui ne cree qu'un raccourci.
+- **iOS / Safari** : il n'existe aucune API d'installation, la barre affiche
+  donc la marche a suivre (Partager, puis « Sur l'ecran d'accueil »). Le
+  resultat est bien une appli plein ecran grace a `display: standalone` et aux
+  metas `apple-mobile-web-app-*`.
+
+La barre se ferme d'un clic sur la croix et ne revient plus (memorise dans le
+navigateur), et ne s'affiche jamais si l'appli est deja installee.
+
+Si Android ne propose qu'un raccourci, c'est qu'un critere manque : origine non
+HTTPS, service worker non enregistre, ou manifeste invalide. Les trois se
+verifient dans Chrome DevTools, onglet *Application*.
 
 ## Fonctionnement
 

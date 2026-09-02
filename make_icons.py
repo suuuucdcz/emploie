@@ -34,6 +34,22 @@ SHAPES = [
 ]
 
 
+# Variante "maskable" : Android rogne l'icone (cercle au pire) en ne gardant
+# que les 80 % centraux. Le dessin doit donc tenir dans cette zone sure, et le
+# fond couvrir tout le carre — c'est le masque qui arrondit les coins.
+MASKABLE_SAFE_SCALE = 0.82
+
+
+def maskable_shapes():
+    """SHAPES ramenees dans la zone sure, sur un fond carre pleine page."""
+    scaled = [(0, 0, 512, 512, 0, BLUE)]
+    for (x, y, w, h, r, color) in SHAPES[1:]:
+        k = MASKABLE_SAFE_SCALE
+        scaled.append((256 + (x - 256) * k, 256 + (y - 256) * k,
+                       w * k, h * k, r * k, color))
+    return scaled
+
+
 def inside_rounded(px, py, x, y, w, h, r):
     if not (x <= px < x + w and y <= py < y + h):
         return False
@@ -46,11 +62,11 @@ def inside_rounded(px, py, x, y, w, h, r):
     return dx * dx + dy * dy <= r * r
 
 
-def render(size):
+def render(size, source=None):
     scale = size / 512.0
     shapes = [
         (x * scale, y * scale, w * scale, h * scale, r * scale, color)
-        for (x, y, w, h, r, color) in SHAPES
+        for (x, y, w, h, r, color) in (source or SHAPES)
     ]
 
     rows = []
@@ -76,8 +92,8 @@ def chunk(tag, payload):
             + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
 
 
-def write_png(path, size):
-    raw = render(size)
+def write_png(path, size, source=None):
+    raw = render(size, source)
     header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)  # RGBA 8 bits
     png = (b"\x89PNG\r\n\x1a\n"
            + chunk(b"IHDR", header)
@@ -92,6 +108,8 @@ def main():
     os.makedirs(ICONS_DIR, exist_ok=True)
     for size in (192, 512):
         write_png(os.path.join(ICONS_DIR, "icon-%d.png" % size), size)
+    write_png(os.path.join(ICONS_DIR, "icon-maskable-512.png"), 512,
+              maskable_shapes())
 
 
 if __name__ == "__main__":

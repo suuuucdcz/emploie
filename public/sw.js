@@ -1,7 +1,7 @@
 /* Service worker : coquille applicative en cache, agenda en reseau d'abord. */
 
-const SHELL_CACHE = 'auriga-shell-v7';
-const DATA_CACHE = 'auriga-data-v7';
+const SHELL_CACHE = 'auriga-shell-v8';
+const DATA_CACHE = 'auriga-data-v8';
 
 const OFFLINE_PAYLOAD = JSON.stringify({ events: [], error: 'hors ligne', stale: true });
 
@@ -14,10 +14,15 @@ const SHELL = [
   '/icons/icon.svg',
 ];
 
+// cache.addAll() est tout-ou-rien : une seule ressource en echec empechait le
+// service worker de s'installer, et donc le navigateur de proposer une vraie
+// installation. On met en cache fichier par fichier, les echecs sont tolerés.
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(SHELL_CACHE)
-      .then((cache) => cache.addAll(SHELL))
+      .then((cache) => Promise.all(
+        SHELL.map((url) => cache.add(url).catch(() => {}))
+      ))
       .then(() => self.skipWaiting())
   );
 });
