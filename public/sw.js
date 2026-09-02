@@ -1,7 +1,7 @@
 /* Service worker : coquille applicative en cache, agenda en reseau d'abord. */
 
-const SHELL_CACHE = 'auriga-shell-v3';
-const DATA_CACHE = 'auriga-data-v3';
+const SHELL_CACHE = 'auriga-shell-v4';
+const DATA_CACHE = 'auriga-data-v4';
 
 const SHELL = [
   '/',
@@ -56,14 +56,14 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // La coquille : cache d'abord, c'est du statique.
+  // La coquille : reseau d'abord pour toujours avoir la derniere version.
   event.respondWith(
-    caches.match(request).then((hit) => hit || fetch(request).then((response) => {
+    fetch(request).then((response) => {
       if (response.ok) {
         const copy = response.clone();
         caches.open(SHELL_CACHE).then((cache) => cache.put(request, copy));
       }
       return response;
-    }))
+    }).catch(() => caches.match(request))
   );
 });

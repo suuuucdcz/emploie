@@ -8,7 +8,7 @@ const KIND_LABEL = {
 const state = {
   events: [],
   selected: startOfDay(new Date()),
-  view: 'day',      // 'day' | 'week'
+  view: 'day',
   meta: null,
   loading: false,
 };
@@ -41,7 +41,6 @@ function addDays(date, count) {
 
 function mondayOf(date) {
   const copy = startOfDay(date);
-  // getDay() : 0 = dimanche. On veut lundi comme premier jour.
   const shift = (copy.getDay() + 6) % 7;
   return addDays(copy, -shift);
 }
@@ -60,7 +59,6 @@ function fmtDayLong(date) {
   const label = date.toLocaleDateString('fr-FR', {
     weekday: 'long', day: 'numeric', month: 'long',
   });
-  // Intl ecrit "1 septembre" ; en francais on dit "1er septembre".
   return label.replace(/\b1 (?=\p{L})/u, '1er ');
 }
 
@@ -74,6 +72,16 @@ function durationLabel(minutes) {
 
 function eventsOn(date) {
   return state.events.filter((evt) => sameDay(evt._start, date));
+}
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function getUserEmail() {
+  return localStorage.getItem('auriga_email') || '';
 }
 
 /* ------------------------------------------------------------------ donnees */
@@ -108,17 +116,27 @@ function writeCache(payload) {
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify(payload));
   } catch (err) {
-    /* quota plein ou navigation privee : le cache est un bonus, on ignore */
+    /* quota plein ou navigation privee */
   }
 }
 
 async function load({ force = false } = {}) {
+  const email = getUserEmail();
+
+  // Pas d'email enregistre => on ouvre directement la modal
+  if (!email) {
+    state.loading = false;
+    state.meta = { error: 'Veuillez vous connecter.' };
+    render();
+    document.getElementById('sync-modal').hidden = false;
+    return;
+  }
+
   state.loading = true;
   el.refresh.classList.add('spinning');
   try {
-    const res = await fetch(`/api/schedule${force ? '?refresh=1' : ''}`, {
-      cache: 'no-store',
-    });
+    const url = `/api/schedule?email=${encodeURIComponent(email)}${force ? '&refresh=1' : ''}`;
+    const res = await fetch(url, { cache: 'no-store' });
     const payload = await res.json();
     if (!res.ok && !(payload.events || []).length) throw new Error(payload.error || 'erreur serveur');
     hydrate(payload);
@@ -186,14 +204,14 @@ function renderStrip() {
 
 function renderContent() {
   if (state.loading && !state.events.length) {
-    el.content.innerHTML = '<p class="loading">Chargement…</p>';
+    el.content.innerHTML = '<p class="loading">Chargement\u2026</p>';
     return;
   }
 
   if (state.meta && state.meta.error && !state.events.length) {
     document.getElementById('sync-modal').hidden = false;
     el.content.innerHTML = `
-      <p class="empty"><span class="big">⚠️</span>
+      <p class="empty"><span class="big">\u26A0\uFE0F</span>
       Impossible de charger l'emploi du temps.<br>${escapeHtml(state.meta.error)}</p>`;
     return;
   }
@@ -215,7 +233,7 @@ function renderDay() {
   if (!events.length) {
     const empty = document.createElement('p');
     empty.className = 'empty';
-    empty.innerHTML = `<span class="big">🎉</span>Aucun cours le ${fmtDayLong(state.selected)}.`;
+    empty.innerHTML = `<span class="big">\uD83C\uDF89</span>Aucun cours le ${fmtDayLong(state.selected)}.`;
     el.content.appendChild(empty);
     return;
   }
@@ -243,7 +261,7 @@ function renderWeek() {
   if (!total) {
     const empty = document.createElement('p');
     empty.className = 'empty';
-    empty.innerHTML = '<span class="big">🎉</span>Aucun cours cette semaine.';
+    empty.innerHTML = '<span class="big">\uD83C\uDF89</span>Aucun cours cette semaine.';
     el.content.appendChild(empty);
   }
 }
@@ -258,9 +276,9 @@ function card(evt) {
   node.style.setProperty('--kind', `var(--${evt.kind.toLowerCase()})`);
 
   const meta = [];
-  if (evt.location) meta.push(`<span>📍 ${escapeHtml(evt.location)}</span>`);
-  if (evt.teacher) meta.push(`<span>👤 ${escapeHtml(evt.teacher)}</span>`);
-  meta.push(`<span>⏱ ${durationLabel(minutes)}</span>`);
+  if (evt.location) meta.push(`<span>\uD83D\uDCCD ${escapeHtml(evt.location)}</span>`);
+  if (evt.teacher) meta.push(`<span>\uD83D\uDC64 ${escapeHtml(evt.teacher)}</span>`);
+  meta.push(`<span>\u23F1 ${durationLabel(minutes)}</span>`);
 
   node.innerHTML = `
     <div class="card-time">
@@ -287,7 +305,7 @@ function nextCourseBanner() {
   if (ongoing) {
     const left = Math.round((ongoing._end - now) / 60000);
     banner.innerHTML = `En cours : <strong>${escapeHtml(ongoing.title)}</strong>
-      ${ongoing.location ? `· ${escapeHtml(ongoing.location)}` : ''}
+      ${ongoing.location ? `\u00B7 ${escapeHtml(ongoing.location)}` : ''}
       <span class="when">fin dans ${durationLabel(left)}</span>`;
     return banner;
   }
@@ -295,7 +313,7 @@ function nextCourseBanner() {
   if (upcoming && sameDay(upcoming._start, startOfDay(now))) {
     const inMinutes = Math.round((upcoming._start - now) / 60000);
     banner.innerHTML = `Prochain cours : <strong>${escapeHtml(upcoming.title)}</strong>
-      ${upcoming.location ? `· ${escapeHtml(upcoming.location)}` : ''}
+      ${upcoming.location ? `\u00B7 ${escapeHtml(upcoming.location)}` : ''}
       <span class="when">dans ${durationLabel(inMinutes)}</span>`;
     return banner;
   }
@@ -304,7 +322,7 @@ function nextCourseBanner() {
 }
 
 function renderStatus() {
-  if (!state.meta) { el.status.textContent = '—'; return; }
+  if (!state.meta) { el.status.textContent = '\u2014'; return; }
 
   const parts = [];
   if (state.meta.fetchedAt) {
@@ -315,17 +333,11 @@ function renderStatus() {
   }
   parts.push(`${state.events.length} cours`);
 
-  el.status.textContent = parts.join(' · ');
+  el.status.textContent = parts.join(' \u00B7 ');
   el.status.className = state.meta.stale ? 'warn' : '';
   if (state.meta.stale) {
-    el.status.textContent += ' · données en cache';
+    el.status.textContent += ' \u00B7 donn\u00E9es en cache';
   }
-}
-
-function escapeHtml(value) {
-  return String(value == null ? '' : value)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 /* ------------------------------------------------------------ interactions */
@@ -341,7 +353,10 @@ el.today.addEventListener('click', () => {
   render();
 });
 
-el.refresh.addEventListener('click', () => load({ force: true }));
+// Le bouton refresh ouvre la modal de synchronisation
+el.refresh.addEventListener('click', () => {
+  document.getElementById('sync-modal').hidden = false;
+});
 
 el.viewToggle.addEventListener('click', () => {
   state.view = state.view === 'week' ? 'day' : 'week';
@@ -367,19 +382,93 @@ el.content.addEventListener('touchstart', (event) => {
 el.content.addEventListener('touchend', (event) => {
   const dx = event.changedTouches[0].clientX - touchStartX;
   const dy = event.changedTouches[0].clientY - touchStartY;
-  // on ignore les gestes trop verticaux : c'est un scroll, pas un swipe
   if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6) {
     step(dx < 0 ? 1 : -1);
   }
 }, { passive: true });
 
-// Le bandeau "prochain cours" et l'etat "en cours" doivent rester justes.
 setInterval(() => {
   if (!state.loading) render();
 }, 60000);
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') load();
+});
+
+/* ============================================================ SYNC LOGIC */
+
+const syncModal = document.getElementById('sync-modal');
+const syncStartBtn = document.getElementById('sync-start-btn');
+const syncCloseBtn = document.getElementById('sync-close-btn');
+const syncStatus = document.getElementById('sync-status');
+const syncA2f = document.getElementById('sync-a2f');
+const syncEmail = document.getElementById('sync-email');
+const syncPassword = document.getElementById('sync-password');
+
+// Restaurer les identifiants sauvegard\u00E9s
+const savedEmail = localStorage.getItem('auriga_email');
+const savedPwd = localStorage.getItem('auriga_password');
+if (savedEmail) syncEmail.value = savedEmail;
+if (savedPwd) syncPassword.value = savedPwd;
+
+syncCloseBtn.addEventListener('click', () => { syncModal.hidden = true; });
+
+let pollInterval = null;
+
+function pollSync() {
+  const email = getUserEmail();
+  fetch(`/api/sync/status?email=${encodeURIComponent(email)}`)
+    .then(r => r.json())
+    .then(st => {
+      if (st.status === 'idle') {
+        syncStatus.textContent = 'En attente...';
+      } else if (st.status === 'logging_in') {
+        syncStatus.textContent = 'Connexion \u00E0 Microsoft en cours...';
+      } else if (st.status === 'waiting_2fa') {
+        syncStatus.textContent = 'Tapez ce num\u00E9ro sur votre t\u00E9l\u00E9phone :';
+        syncA2f.style.display = 'block';
+        syncA2f.textContent = st.code;
+      } else if (st.status === 'downloading') {
+        syncStatus.textContent = 'T\u00E9l\u00E9chargement en cours...';
+        syncA2f.style.display = 'none';
+      } else if (st.status === 'success') {
+        syncStatus.textContent = 'Termin\u00E9 ! Le planning est \u00E0 jour.';
+        syncA2f.style.display = 'none';
+        clearInterval(pollInterval);
+        pollInterval = null;
+        setTimeout(() => { syncModal.hidden = true; location.reload(); }, 2000);
+      } else if (st.status === 'error') {
+        syncStatus.textContent = 'Erreur : ' + st.error_msg;
+        syncA2f.style.display = 'none';
+        clearInterval(pollInterval);
+        pollInterval = null;
+      }
+    })
+    .catch(() => {
+      syncStatus.textContent = 'Erreur de connexion au serveur...';
+    });
+}
+
+syncStartBtn.addEventListener('click', () => {
+  const email = syncEmail.value.trim();
+  const password = syncPassword.value;
+  if (!email) return alert('Email requis');
+  if (!password) return alert('Mot de passe requis');
+
+  // Sauvegarder pour la prochaine fois
+  localStorage.setItem('auriga_email', email);
+  localStorage.setItem('auriga_password', password);
+
+  fetch('/api/sync/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+
+  syncStatus.textContent = 'D\u00E9marrage du robot...';
+  syncStartBtn.disabled = true;
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(pollSync, 2000);
 });
 
 /* ---------------------------------------------------------------- demarrage */
@@ -390,66 +479,6 @@ load();
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {
-      /* pas de HTTPS ou navigation privee : l'appli marche quand meme */
-    });
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
   });
 }
-
-
-/* SYNC LOGIC */
-const syncModal = document.getElementById('sync-modal');
-const syncBtn = document.getElementById('refresh'); // We will override the refresh button to open the modal instead!
-const syncStartBtn = document.getElementById('sync-start-btn');
-const syncCloseBtn = document.getElementById('sync-close-btn');
-const syncStatus = document.getElementById('sync-status');
-const syncA2f = document.getElementById('sync-a2f');
-const syncEmail = document.getElementById('sync-email');
-const syncPassword = document.getElementById('sync-password');
-
-// Restaurer le mot de passe sauvegarde
-const savedPwd = localStorage.getItem('auriga_password');
-if (savedPwd) syncPassword.value = savedPwd;
-
-syncBtn.addEventListener('click', () => { syncModal.hidden = false; });
-syncCloseBtn.addEventListener('click', () => { syncModal.hidden = true; });
-
-let pollInterval = null;
-function pollSync() {
-  const email = localStorage.getItem('auriga_email') || 'mathis.derory@ipsa.fr';
-  fetch(`/api/sync/status?email=${encodeURIComponent(email)}`).then(r => r.json()).then(st => {
-    if (st.status === 'idle') { syncStatus.textContent = 'En attente...'; }
-    else if (st.status === 'logging_in') { syncStatus.textContent = 'Connexion  Microsoft en cours...'; }
-    else if (st.status === 'waiting_2fa') {
-      syncStatus.textContent = 'Veuillez valider la notification sur votre tlphone avec ce numro :';
-      syncA2f.style.display = 'block';
-      syncA2f.textContent = st.code;
-    }
-    else if (st.status === 'downloading') {
-      syncStatus.textContent = 'Tlchargement de l\\'anne en cours...';
-      syncA2f.style.display = 'none';
-    }
-    else if (st.status === 'success') {
-      syncStatus.textContent = 'Termin ! Le planning est  jour.';
-      syncA2f.style.display = 'none';
-      clearInterval(pollInterval);
-      setTimeout(() => { syncModal.hidden = true; location.reload(); }, 2000);
-    }
-    else if (st.status === 'error') {
-      syncStatus.textContent = 'Erreur : ' + st.error_msg;
-      syncA2f.style.display = 'none';
-      clearInterval(pollInterval);
-    }
-  });
-}
-
-syncStartBtn.addEventListener('click', () => {
-  const email = syncEmail.value;
-  const password = syncPassword.value;
-  if(!password) return alert('Mot de passe requis');
-  localStorage.setItem('auriga_password', password);
-  localStorage.setItem('auriga_email', email);
-  fetch('/api/sync/start', { method: 'POST', body: JSON.stringify({email, password}) });
-  syncStatus.textContent = 'Dmarrage du robot...';
-  pollInterval = setInterval(pollSync, 2000);
-});
