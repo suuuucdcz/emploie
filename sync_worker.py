@@ -96,12 +96,21 @@ def convert_to_ics(data_list, email):
 
 def _run_playwright(email, password):
     global SYNC_STATES
-    def set_status(status, code=None, error_msg=None, detail=None):
+    def set_status(status, code=None, error_msg=None, detail=None, screenshot=None):
         SYNC_STATES[email]["status"] = status
         if code is not None: SYNC_STATES[email]["code"] = code
         if error_msg is not None: SYNC_STATES[email]["error_msg"] = error_msg
         if detail is not None: SYNC_STATES[email]["detail"] = detail
+        if screenshot is not None: SYNC_STATES[email]["screenshot"] = screenshot
         print(f"[sync {email}] {status}: {detail or error_msg or code or ''}")
+
+    def take_screenshot(page):
+        import base64
+        try:
+            raw = page.screenshot()
+            return "data:image/png;base64," + base64.b64encode(raw).decode('ascii')
+        except:
+            return None
 
     try:
         with sync_playwright() as playwright:
@@ -120,23 +129,27 @@ def _run_playwright(email, password):
             
             set_status("logging_in", detail="Ouverture du portail Auriga...")
             page.goto("https://auriga.ipsa.fr/", timeout=15000)
+            page.wait_for_timeout(3000)
+            set_status("logging_in", detail="Page Auriga chargee", screenshot=take_screenshot(page))
             
             set_status("logging_in", detail="Recherche du bouton Microsoft...")
             try:
                 page.locator("text=Microsoft").wait_for(timeout=4000)
                 page.locator("text=Microsoft").first.click()
-                set_status("logging_in", detail="Clic sur Microsoft OK")
+                page.wait_for_timeout(3000)
+                set_status("logging_in", detail="Clic sur Microsoft OK", screenshot=take_screenshot(page))
             except Exception as e:
-                set_status("logging_in", detail=f"Bouton Microsoft non trouve, on continue... ({e})")
+                set_status("logging_in", detail=f"Bouton Microsoft non trouve", screenshot=take_screenshot(page))
 
             set_status("logging_in", detail="Attente du champ email...")
             try:
                 page.locator('input[type="email"]').wait_for(timeout=10000)
                 page.locator('input[type="email"]').fill(email)
                 page.locator('input[type="submit"]').click()
-                set_status("logging_in", detail="Email envoye, attente mot de passe...")
+                page.wait_for_timeout(2000)
+                set_status("logging_in", detail="Email envoye, attente mot de passe...", screenshot=take_screenshot(page))
             except Exception as e:
-                set_status("error", error_msg=f"Champ email introuvable: {e}")
+                set_status("error", error_msg=f"Champ email introuvable: {e}", screenshot=take_screenshot(page))
                 browser.close()
                 return
             

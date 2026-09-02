@@ -420,6 +420,12 @@ function pollSync() {
   fetch(`/api/sync/status?email=${encodeURIComponent(email)}`)
     .then(r => r.json())
     .then(st => {
+      // Afficher le screenshot si disponible
+      const imgEl = document.getElementById('sync-screenshot');
+      if (st.screenshot) {
+        imgEl.src = st.screenshot;
+        imgEl.style.display = 'block';
+      }
       if (st.status === 'idle') {
         syncStatus.textContent = 'En attente...';
       } else if (st.status === 'logging_in') {
