@@ -1,31 +1,46 @@
-import urllib.request
-import json
+"""Verifie l'aller-retour Supabase via storage.py : python test_supabase.py
+
+Les identifiants sont en dur ici pour pouvoir tester sans configurer
+l'environnement ; ils ne sont utilises que si SUPABASE_URL / SUPABASE_KEY ne
+sont pas deja definis.
+"""
+
 import os
 
-url = "https://dzcixbkxzjmtoiqgibni.supabase.co"
-key = "CLE_SUPABASE_RETIREE"
+os.environ.setdefault("SUPABASE_URL", "https://dzcixbkxzjmtoiqgibni.supabase.co")
+os.environ.setdefault(
+    "SUPABASE_KEY",
+    "CLE_SUPABASE_RETIREE"
+    "CLE_SUPABASE_RETIREE"
+    "CLE_SUPABASE_RETIREE"
+    "CLE_SUPABASE_RETIREE",
+)
 
-try:
-    print("Test POST...")
-    req = urllib.request.Request(f"{url}/rest/v1/schedules", headers={
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates"
-    }, data=json.dumps({"email": "test@ipsa.fr", "ics_content": "BEGIN:VCALENDAR"}).encode("utf-8"))
-    req.get_method = lambda: 'POST'
-    urllib.request.urlopen(req)
-    print("POST: OK")
+import storage  # noqa: E402  (doit voir les variables ci-dessus)
 
-    print("Test GET...")
-    req2 = urllib.request.Request(f"{url}/rest/v1/schedules?email=eq.test@ipsa.fr&select=ics_content", headers={
-        "apikey": key,
-        "Authorization": f"Bearer {key}"
-    })
-    res = urllib.request.urlopen(req2).read().decode('utf-8')
-    print("GET:", res)
+TEST_EMAIL = "test@ipsa.fr"
+TEST_ICS = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"
 
-except Exception as e:
-    if hasattr(e, 'read'):
-        print("Erreur body:", e.read().decode('utf-8'))
-    print("Erreur:", str(e))
+
+def main():
+    url, _ = storage.supabase_config()
+    if not url:
+        print("Supabase non configure.")
+        return 1
+
+    print("Ecriture...")
+    print("  -> %s" % storage.save_schedule(TEST_EMAIL, TEST_ICS))
+
+    print("Lecture...")
+    content, source = storage.load_schedule(TEST_EMAIL)
+
+    if content.strip() != TEST_ICS.strip():
+        print("ECHEC : contenu relu different (source : %s)" % source)
+        return 1
+
+    print("OK : aller-retour reussi depuis %s" % source)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

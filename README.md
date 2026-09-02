@@ -1,53 +1,48 @@
 # Emploi du temps Auriga
 
-Une PWA pour consulter son emploi du temps Aurion (portail `auriga.ipsa.fr`) sur
-telephone, sans passer par le portail web a chaque fois.
+Une PWA pour consulter son emploi du temps Aurion (portail `auriga.ipsa.fr`)
+sur telephone, sans repasser par le portail web a chaque fois.
 
-Le principe : le portail expose (en general) un flux **iCal**. Un petit serveur
-Python le recupere cote serveur — ce qui evite le blocage CORS — le convertit en
-JSON propre, et sert une interface pensee pour le mobile.
-
-**100 % bibliotheque standard Python.** Aucun `pip install`, aucun `npm install`.
+Aurion n'expose pas de flux iCal utilisable. L'appli contourne ca en pilotant
+un navigateur headless : il se connecte au portail avec tes identifiants
+Microsoft, intercepte le token de l'API interne `/api/plannings/me`, aspire
+deux ans de planning, et enregistre le tout en ICS. La PWA lit ensuite cet ICS
+converti en JSON.
 
 ## Demarrage
 
 ```bash
+pip install -r requirements.txt
+playwright install chromium
 python server.py
 ```
 
-Puis ouvre <http://localhost:8787>. Sans configuration, l'appli tourne en **mode
-demo** sur `sample.ics` (une semaine de cours fictifs) : pratique pour voir a quoi
-ca ressemble avant de brancher le vrai agenda.
+Puis ouvre <http://localhost:8787>, saisis ton email et ton mot de passe de
+l'ecole, et lance la recuperation. Le robot affiche en direct ce qu'il voit et
+le numero A2F a taper sur ton telephone. Une fois termine, l'agenda est
+enregistre et la page se recharge.
 
-## Brancher ton vrai emploi du temps
+Seul l'email est memorise dans le navigateur : le mot de passe n'est jamais
+stocke, il faut le retaper a chaque synchronisation.
 
-1. Connecte-toi sur <https://auriga.ipsa.fr>.
-2. Va sur ton emploi du temps et cherche une option d'export : selon les
-   installations Aurion elle s'appelle « Exporter », « iCal », « Synchroniser mon
-   agenda » ou « S'abonner au calendrier ». Elle donne une URL en `.ics`.
-3. Copie `config.example.json` en `config.json` et colle l'URL :
+## Configuration
 
-```json
-{ "ics_url": "https://auriga.ipsa.fr/....ics" }
-```
+`config.json` ne contient aucun secret :
 
-4. Relance `python server.py`.
+| Cle | Defaut | Role |
+| --- | --- | --- |
+| `port` | `8787` | port d'ecoute (`$PORT` de l'hebergeur a la priorite) |
+| `refresh_seconds` | `900` | duree de vie du cache memoire d'un agenda |
 
-Tu peux aussi passer par la ligne de commande, sans fichier de config :
+Le stockage se choisit par variables d'environnement :
 
-```bash
-python server.py --ics-url "https://auriga.ipsa.fr/....ics"
-```
+| Variable | Effet |
+| --- | --- |
+| `SUPABASE_URL` + `SUPABASE_KEY` | agendas ranges dans la table `schedules` |
+| (aucune) | repli sur le dossier local `cache/` |
 
-Ou travailler sur un fichier deja telecharge :
-
-```bash
-python server.py --ics-file mon-agenda.ics
-```
-
-> **Cette URL vaut un mot de passe** : elle donne acces a ton agenda sans
-> authentification. `config.json` est dans le `.gitignore`, ne la partage pas et
-> ne la commite pas.
+Supabase est necessaire en hebergement : le disque de Render est ephemere, un
+redemarrage effacerait `cache/`.
 
 ## Depuis le telephone
 
@@ -60,28 +55,44 @@ Le serveur ecoute sur toutes les interfaces. Sur le meme wifi :
 **Limite a connaitre :** en `http://` sur une IP locale, le navigateur refuse
 d'enregistrer le service worker (reserve aux origines securisees). L'appli
 fonctionne, mais **sans cache hors ligne ni vraie installation PWA**. Sur iOS le
-raccourci ecran d'accueil marche quand meme. Pour avoir l'offline complet il faut
-servir en HTTPS — un tunnel type Cloudflare Tunnel, ou un hebergement.
+raccourci ecran d'accueil marche quand meme. Pour l'offline complet il faut du
+HTTPS — un tunnel Cloudflare, ou un hebergement.
 
 ## Fonctionnement
 
 | Fichier | Role |
 | --- | --- |
-| `server.py` | Serveur HTTP : sert la PWA + `/api/schedule` (recuperation, cache, JSON) |
+| `server.py` | Serveur HTTP : la PWA, `/api/schedule`, `/api/sync/*` |
+| `sync_worker.py` | Robot Playwright : login Microsoft, A2F, capture du token |
+| `ics_builder.py` | Appels API Auriga + generation de l'ICS (RFC 5545) |
+| `storage.py` | Ou vit un agenda : Supabase ou `cache/` |
 | `ics.py` | Parseur ICS : VEVENT, fuseaux, RRULE/EXDATE, detection CM/TD/TP |
 | `public/` | La PWA (`index.html`, `app.js`, `styles.css`, `sw.js`, manifeste) |
-| `make_sample.py` | Regenere `sample.ics` sur la semaine en cours |
+| `update_planning.py` | Synchronisation manuelle en ligne de commande |
 | `make_icons.py` | Regenere les icones PNG depuis le meme dessin que `icon.svg` |
-| `test_ics.py` | Tests du parseur (`python test_ics.py`) |
 
-Details qui comptent :
+### API HTTP
 
-- **Fuseaux horaires.** Le serveur normalise tout en UTC, le navigateur reaffiche
-  en heure locale. Les regles de changement d'heure europeennes sont codees en
-  dur, donc pas besoin du paquet `tzdata` (souvent absent sous Windows).
-- **Cache.** Le flux est rafraichi toutes les 15 min (`refresh_seconds`). Si le
-  reseau tombe, la derniere version connue est servie et marquee « donnees en
-  cache » plutot que d'afficher une erreur.
+| Route | Role |
+| --- | --- |
+| `GET /api/schedule?email=…` | agenda en JSON (`&refresh=1` force la relecture) |
+| `POST /api/sync/start` | `{email, password}` -> `{success, syncId}` |
+| `GET /api/sync/status?id=…` | avancement, code A2F, capture d'ecran |
+| `GET /api/health` | sonde de vie |
+
+L'etat d'une synchronisation est adresse par un identifiant aleatoire, pas par
+l'email : les captures d'ecran et le code A2F ne doivent pas etre lisibles par
+quiconque connait l'adresse de quelqu'un.
+
+### Details qui comptent
+
+- **Fuseaux horaires.** L'API renvoie de l'UTC, l'ICS reste en UTC, le
+  navigateur reaffiche en heure locale. Le parseur code en dur les regles de
+  changement d'heure europeennes, donc pas besoin du paquet `tzdata` (souvent
+  absent sous Windows).
+- **Cache.** Trois niveaux : memoire serveur (`refresh_seconds`), `localStorage`
+  du navigateur, et le service worker. Si le reseau tombe, la derniere version
+  connue est servie et marquee « donnees en cache » plutot qu'une erreur.
 - **Types de cours.** CM / TD / TP / examen / projet sont devines depuis le
   libelle et la description, avec un code couleur. Si l'heuristique ne reconnait
   rien, le libelle brut est affiche tel quel — rien n'est masque.
@@ -97,13 +108,21 @@ Details qui comptent :
 
 ```bash
 python test_ics.py
+python test_ics_builder.py
 ```
+
+`test_supabase.py` fait un vrai aller-retour sur la base : a lancer seulement
+quand on touche a `storage.py`.
 
 ## Limites actuelles
 
-- Emploi du temps uniquement. Notes et absences demanderaient de taper l'API
-  Aurion authentifiee, ce qui est un autre chantier.
+- **Aucune authentification.** N'importe qui connaissant une adresse email peut
+  lire l'agenda correspondant via `/api/schedule`, et `/api/sync/start` est
+  ouvert (plafonne a 2 synchronisations simultanees, sans plus). Acceptable pour
+  un usage perso, pas pour une mise a disposition large.
+- Emploi du temps uniquement. Notes et absences demanderaient d'autres endpoints
+  de l'API Aurion.
+- Le robot depend de la mise en page de la connexion Microsoft : si Microsoft la
+  change, les selecteurs de `sync_worker.py` sont a reprendre.
 - Les RRULE complexes (`FREQ=MONTHLY`, `BYSETPOS`…) ne sont pas developpees :
   l'evenement de base est conserve, il n'y a pas de perte silencieuse.
-- Le lien ICS peut expirer : dans ce cas `/api/schedule` renvoie une erreur
-  explicite et il faut regenerer l'URL depuis le portail.

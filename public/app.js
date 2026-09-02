@@ -123,12 +123,12 @@ function writeCache(payload) {
 async function load({ force = false } = {}) {
   const email = getUserEmail();
 
-  // Pas d'email enregistre => on ouvre directement la modal
+  // Pas d'email enregistre : rien a demander au serveur.
   if (!email) {
     state.loading = false;
     state.meta = { error: 'Veuillez vous connecter.' };
     render();
-    document.getElementById('sync-modal').hidden = false;
+    openSyncModal();
     return;
   }
 
@@ -148,6 +148,7 @@ async function load({ force = false } = {}) {
       state.meta = { ...state.meta, stale: true, error: 'hors ligne' };
     } else {
       state.meta = { error: err.message };
+      openSyncModal();
     }
   } finally {
     state.loading = false;
@@ -209,7 +210,6 @@ function renderContent() {
   }
 
   if (state.meta && state.meta.error && !state.events.length) {
-    document.getElementById('sync-modal').hidden = false;
     el.content.innerHTML = `
       <p class="empty"><span class="big">\u26A0\uFE0F</span>
       Impossible de charger l'emploi du temps.<br>${escapeHtml(state.meta.error)}</p>`;
@@ -354,9 +354,7 @@ el.today.addEventListener('click', () => {
 });
 
 // Le bouton refresh ouvre la modal de synchronisation
-el.refresh.addEventListener('click', () => {
-  document.getElementById('sync-modal').hidden = false;
-});
+el.refresh.addEventListener('click', () => openSyncModal({ force: true }));
 
 el.viewToggle.addEventListener('click', () => {
   state.view = state.view === 'week' ? 'day' : 'week';
@@ -395,90 +393,132 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') load();
 });
 
-/* ============================================================ SYNC LOGIC */
+/* ------------------------------------------------------------ sync robot */
 
-const syncModal = document.getElementById('sync-modal');
-const syncStartBtn = document.getElementById('sync-start-btn');
-const syncCloseBtn = document.getElementById('sync-close-btn');
-const syncStatus = document.getElementById('sync-status');
-const syncA2f = document.getElementById('sync-a2f');
-const syncEmail = document.getElementById('sync-email');
-const syncPassword = document.getElementById('sync-password');
+const POLL_MS = 2000;
 
-// Restaurer les identifiants sauvegard\u00E9s
-const savedEmail = localStorage.getItem('auriga_email');
-const savedPwd = localStorage.getItem('auriga_password');
-if (savedEmail) syncEmail.value = savedEmail;
-if (savedPwd) syncPassword.value = savedPwd;
+const sync = {
+  modal: document.getElementById('sync-modal'),
+  startBtn: document.getElementById('sync-start-btn'),
+  closeBtn: document.getElementById('sync-close-btn'),
+  status: document.getElementById('sync-status'),
+  a2f: document.getElementById('sync-a2f'),
+  email: document.getElementById('sync-email'),
+  password: document.getElementById('sync-password'),
+  shot: document.getElementById('sync-screenshot'),
+};
 
-syncCloseBtn.addEventListener('click', () => { syncModal.hidden = true; });
+// Seul l'email est memorise : un mot de passe dans localStorage serait lisible
+// par n'importe quel script de la page.
+sync.email.value = getUserEmail();
 
-let pollInterval = null;
+let syncDismissed = false;   // l'utilisateur a ferme la modal, on la laisse fermee
+let syncTimer = null;
+let syncId = null;
 
-function pollSync() {
-  const email = getUserEmail();
-  fetch(`/api/sync/status?email=${encodeURIComponent(email)}`)
-    .then(r => r.json())
-    .then(st => {
-      // Afficher le screenshot si disponible
-      const imgEl = document.getElementById('sync-screenshot');
-      if (st.screenshot) {
-        imgEl.src = st.screenshot;
-        imgEl.style.display = 'block';
-      }
-      if (st.status === 'idle') {
-        syncStatus.textContent = 'En attente...';
-      } else if (st.status === 'logging_in') {
-        syncStatus.textContent = st.detail || 'Connexion \u00E0 Microsoft en cours...';
-      } else if (st.status === 'waiting_2fa') {
-        syncStatus.textContent = st.detail || 'Tapez ce num\u00E9ro sur votre t\u00E9l\u00E9phone :';
-        if (st.code) {
-          syncA2f.style.display = 'block';
-          syncA2f.textContent = st.code;
-        }
-      } else if (st.status === 'downloading') {
-        syncStatus.textContent = st.detail || 'T\u00E9l\u00E9chargement en cours...';
-        syncA2f.style.display = 'none';
-      } else if (st.status === 'success') {
-        syncStatus.textContent = 'Termin\u00E9 ! Le planning est \u00E0 jour.';
-        syncA2f.style.display = 'none';
-        clearInterval(pollInterval);
-        pollInterval = null;
-        setTimeout(() => { syncModal.hidden = true; location.reload(); }, 2000);
-      } else if (st.status === 'error') {
-        syncStatus.textContent = 'Erreur : ' + (st.error_msg || 'inconnue');
-        syncA2f.style.display = 'none';
-        clearInterval(pollInterval);
-        pollInterval = null;
-        syncStartBtn.disabled = false;
-      }
-    })
-    .catch(() => {
-      syncStatus.textContent = 'Erreur de connexion au serveur...';
-    });
+function openSyncModal({ force = false } = {}) {
+  if (syncDismissed && !force) return;
+  if (force) syncDismissed = false;
+  sync.modal.hidden = false;
 }
 
-syncStartBtn.addEventListener('click', () => {
-  const email = syncEmail.value.trim();
-  const password = syncPassword.value;
-  if (!email) return alert('Email requis');
-  if (!password) return alert('Mot de passe requis');
+function closeSyncModal() {
+  sync.modal.hidden = true;
+  syncDismissed = true;
+}
 
-  // Sauvegarder pour la prochaine fois
+function stopPolling() {
+  clearInterval(syncTimer);
+  syncTimer = null;
+}
+
+function showScreenshot(dataUri) {
+  sync.shot.hidden = !dataUri;
+  if (dataUri) sync.shot.src = dataUri;
+}
+
+function showA2fCode(code) {
+  sync.a2f.hidden = !code;
+  if (code) sync.a2f.textContent = code;
+}
+
+function finishSync(message, { reload = false } = {}) {
+  stopPolling();
+  showA2fCode(null);
+  sync.status.textContent = message;
+  sync.startBtn.disabled = false;
+  if (reload) setTimeout(() => { sync.modal.hidden = true; location.reload(); }, 2000);
+}
+
+function applySyncState(st) {
+  showScreenshot(st.screenshot);
+
+  switch (st.status) {
+    case 'waiting_2fa':
+      sync.status.textContent = st.detail || 'Tapez ce num\u00E9ro sur votre t\u00E9l\u00E9phone :';
+      showA2fCode(st.code);
+      break;
+    case 'downloading':
+      sync.status.textContent = st.detail || 'T\u00E9l\u00E9chargement en cours\u2026';
+      showA2fCode(null);
+      break;
+    case 'success':
+      showScreenshot(null);
+      finishSync('Termin\u00E9 ! Le planning est \u00E0 jour.', { reload: true });
+      break;
+    case 'error':
+      finishSync('Erreur : ' + (st.error_msg || 'inconnue'));
+      break;
+    case 'unknown':
+      finishSync('Synchronisation introuvable, relance-la.');
+      break;
+    default:  // starting, logging_in
+      sync.status.textContent = st.detail || 'Connexion \u00E0 Microsoft en cours\u2026';
+  }
+}
+
+function pollSync() {
+  if (!syncId) return;
+  fetch(`/api/sync/status?id=${encodeURIComponent(syncId)}`)
+    .then((res) => res.json())
+    .then(applySyncState)
+    .catch(() => { sync.status.textContent = 'Erreur de connexion au serveur\u2026'; });
+}
+
+async function startSync() {
+  const email = sync.email.value.trim();
+  const password = sync.password.value;
+  if (!email || !password) {
+    sync.status.textContent = 'Email et mot de passe requis.';
+    return;
+  }
+
   localStorage.setItem('auriga_email', email);
-  localStorage.setItem('auriga_password', password);
+  sync.status.textContent = 'D\u00E9marrage du robot\u2026';
+  sync.startBtn.disabled = true;
+  showA2fCode(null);
+  showScreenshot(null);
+  stopPolling();
 
-  fetch('/api/sync/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
+  try {
+    const res = await fetch('/api/sync/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    const payload = await res.json();
+    if (!payload.success) throw new Error(payload.error || 'demarrage impossible');
 
-  syncStatus.textContent = 'D\u00E9marrage du robot...';
-  syncStartBtn.disabled = true;
-  if (pollInterval) clearInterval(pollInterval);
-  pollInterval = setInterval(pollSync, 2000);
-});
+    syncId = payload.syncId;
+    sync.password.value = '';  // ne pas le laisser trainer dans le DOM
+    syncTimer = setInterval(pollSync, POLL_MS);
+  } catch (err) {
+    finishSync('Erreur : ' + err.message);
+  }
+}
+
+sync.startBtn.addEventListener('click', startSync);
+sync.closeBtn.addEventListener('click', () => { stopPolling(); closeSyncModal(); });
 
 /* ---------------------------------------------------------------- demarrage */
 
@@ -492,17 +532,20 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-let deferredPrompt;
-window.addEventListener('beforeinstallprompt', (e) => {
-  e.preventDefault();
-  deferredPrompt = e;
+// Android propose l'installation via cet evenement : on le garde pour offrir
+// un bouton explicite plutot que la banniere du navigateur.
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  deferredPrompt = event;
+
   const btn = document.createElement('button');
-  btn.className = 'btn-primary';
+  btn.type = 'button';
+  btn.className = 'btn-primary install-btn';
   btn.textContent = 'Installer l\'application sur le téléphone';
-  btn.style.margin = '20px';
-  btn.onclick = () => {
+  btn.addEventListener('click', () => {
     deferredPrompt.prompt();
-    deferredPrompt.userChoice.then(() => { btn.remove(); deferredPrompt = null; });
-  };
-  document.getElementById('content').prepend(btn);
+    deferredPrompt.userChoice.finally(() => { btn.remove(); deferredPrompt = null; });
+  });
+  el.content.prepend(btn);
 });

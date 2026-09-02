@@ -1,0 +1,13 @@
+# Rien de local ne doit finir dans l'image.
+.git
+.gitignore
+__pycache__/
+*.pyc
+
+cache/
+planning_capture.json
+session_state.json
+mon_agenda_genere.ics
+
+README.md
+test_*.py

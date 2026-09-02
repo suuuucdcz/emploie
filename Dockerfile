@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
-# Installer les librairies systeme dont Chromium a besoin
-RUN apt-get update && apt-get install -y \
+# Librairies systeme dont Chromium a besoin
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libdbus-1-3 libxkbcommon0 \
     libatspi2.0-0 libxcomposite1 libxdamage1 \
@@ -17,6 +17,8 @@ RUN playwright install chromium
 
 COPY . .
 
-EXPOSE 10000
+# Port par defaut ; l'hebergeur peut imposer le sien via $PORT.
+ENV PORT=8787
+EXPOSE 8787
 
 CMD ["python", "server.py"]

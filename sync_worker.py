@@ -1,274 +1,317 @@
-import json
+"""Synchronisation Auriga : pilote un Chromium headless jusqu'au token, puis
+aspire le planning via l'API et l'enregistre.
+
+L'etat d'une synchronisation est expose sous un identifiant aleatoire, et non
+sous l'adresse email : les captures d'ecran et le code A2F ne doivent pas etre
+lisibles par quiconque connait l'email de quelqu'un.
+"""
+
+import base64
+import secrets
 import threading
 import time
-import datetime
-import urllib.request
-import os
+
 from playwright.sync_api import sync_playwright
 
-SYNC_STATES = {}
+import ics_builder
+import storage
 
-def fetch_month(token, start_date, end_date):
-    url = f"https://auriga.ipsa.fr/api/plannings/me?days=1&days=2&days=3&days=4&days=5&days=6&days=7&startDate={start_date}&endDate={end_date}"
-    req = urllib.request.Request(url, headers={
-        "Authorization": token,
-        "Accept": "application/json"
-    })
+PORTAL_URL = "https://auriga.ipsa.fr/"
+PLANNING_URL = "https://auriga.ipsa.fr/#/mainContent/menuEntry/227/planning"
+
+ACTIVE_STATUSES = ("starting", "logging_in", "waiting_2fa", "downloading")
+MAX_CONCURRENT_SYNCS = 2
+MAX_STATES = 50
+STATE_TTL_SECONDS = 3600
+
+# Attente de la validation A2F : 15 tours de 2 s.
+A2F_POLL_ROUNDS = 15
+A2F_POLL_INTERVAL_MS = 2000
+TOKEN_TIMEOUT_SECONDS = 30
+
+_states = {}
+_lock = threading.Lock()
+
+
+class SyncBusy(Exception):
+    """Le serveur ne peut pas accepter une synchronisation de plus."""
+
+
+# --------------------------------------------------------------------------
+# Etat partage
+# --------------------------------------------------------------------------
+
+def _prune_locked():
+    """Purge les etats termines depuis longtemps, puis les plus anciens."""
+    cutoff = time.time() - STATE_TTL_SECONDS
+    for sync_id in [k for k, v in _states.items()
+                    if v["status"] not in ACTIVE_STATUSES and v["updated_at"] < cutoff]:
+        del _states[sync_id]
+
+    if len(_states) > MAX_STATES:
+        stale = sorted(_states.items(), key=lambda item: item[1]["updated_at"])
+        for sync_id, state in stale[:len(_states) - MAX_STATES]:
+            if state["status"] not in ACTIVE_STATUSES:
+                del _states[sync_id]
+
+
+def _update(sync_id, **fields):
+    with _lock:
+        state = _states.get(sync_id)
+        if state is None:
+            return
+        state.update({k: v for k, v in fields.items() if v is not None})
+        state["updated_at"] = time.time()
+
+
+def _drop_screenshot(sync_id):
+    """Libere la capture (plusieurs centaines de Ko) une fois la sync finie."""
+    with _lock:
+        if sync_id in _states:
+            _states[sync_id]["screenshot"] = None
+
+
+def get_status(sync_id):
+    """Etat public d'une synchronisation, sans les champs internes."""
+    with _lock:
+        state = _states.get(sync_id)
+        if state is None:
+            return {"status": "unknown"}
+        return {k: v for k, v in state.items() if k not in ("email", "created_at")}
+
+
+def _active_count_locked():
+    return sum(1 for s in _states.values() if s["status"] in ACTIVE_STATUSES)
+
+
+# --------------------------------------------------------------------------
+# Pilotage du navigateur
+# --------------------------------------------------------------------------
+
+def _screenshot(page):
+    """Capture PNG en data URI, ou None si la page n'est plus capturable."""
     try:
-        with urllib.request.urlopen(req) as response:
-            return json.loads(response.read().decode('utf-8'))
-    except Exception as e:
+        return "data:image/png;base64," + base64.b64encode(page.screenshot()).decode("ascii")
+    except Exception:
         return None
 
-def convert_to_ics(data_list, email):
-    events = []
-    for req in data_list:
-        interventions = req.get('data', {}).get('interventions', [])
-        for evt in interventions:
-            events.append(evt)
-    unique_events = {}
-    for evt in events:
-        unique_events[evt['id']] = evt
-    events = list(unique_events.values())
-    
-    ics_lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Auriga//NONSGML v1.0//EN"]
-    for evt in events:
-        start = evt['startDateTime'].replace('-', '').replace(':', '')
-        end = evt['endDateTime'].replace('-', '').replace(':', '')
-        act_type = evt.get('activityType', {}).get('code', '')
-        units = evt.get('interventionPedagogicalUnits', [])
-        matter = ""
-        if units and len(units) > 0:
-            matter = units[0].get('pedagogicalUnit', {}).get('caption', {}).get('fr', '')
-        if not matter:
-            matter = evt.get('description', '')
-        summary = matter
-        if act_type and act_type != matter:
-            summary = f"{act_type} - {matter}"
-        instructors = evt.get('interventionInstructors', [])
-        prof_names = []
-        for inst in instructors:
-            p = inst.get('person', {})
-            prof_names.append(f"{p.get('currentFirstName', '')} {p.get('currentLastName', '')}")
-        description = ", ".join(prof_names)
-        resources = evt.get('interventionResources', [])
-        rooms = []
-        for res in resources:
-            if res.get('resource', {}).get('isRoom'):
-                rooms.append(res['resource'].get('caption', {}).get('fr', ''))
-        location = ", ".join(rooms)
-        ics_lines.append("BEGIN:VEVENT")
-        ics_lines.append(f"UID:{evt['id']}@auriga")
-        ics_lines.append(f"DTSTART:{start}")
-        ics_lines.append(f"DTEND:{end}")
-        ics_lines.append(f"SUMMARY:{summary}")
-        ics_lines.append(f"DESCRIPTION:{description}")
-        ics_lines.append(f"LOCATION:{location}")
-        ics_lines.append("END:VEVENT")
-    ics_lines.append("END:VCALENDAR")
-    
-    ics_content = "\n".join(ics_lines)
-    
-    # --- SAUVEGARDE (SUPABASE OU LOCAL) ---
-    supabase_url = os.environ.get("SUPABASE_URL")
-    supabase_key = os.environ.get("SUPABASE_KEY")
-    
-    if supabase_url and supabase_key:
-        print(f" -> Envoi vers Supabase pour {email}...")
-        req = urllib.request.Request(f"{supabase_url}/rest/v1/schedules", headers={
-            "apikey": supabase_key,
-            "Authorization": f"Bearer {supabase_key}",
-            "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates"
-        }, data=json.dumps({"email": email, "ics_content": ics_content}).encode("utf-8"))
-        req.get_method = lambda: 'POST'
-        try:
-            urllib.request.urlopen(req)
-        except Exception as e:
-            print(f"Erreur Supabase: {e}")
-    else:
-        # Fallback local
-        os.makedirs('cache', exist_ok=True)
-        safe_email = email.replace('@', '_').replace('.', '_')
-        filename = f"cache/{safe_email}.ics"
-        with open(filename, 'w', encoding='utf-8') as f:
-            f.write(ics_content)
 
-def _run_playwright(email, password):
-    global SYNC_STATES
-    def set_status(status, code=None, error_msg=None, detail=None, screenshot=None):
-        SYNC_STATES[email]["status"] = status
-        if code is not None: SYNC_STATES[email]["code"] = code
-        if error_msg is not None: SYNC_STATES[email]["error_msg"] = error_msg
-        if detail is not None: SYNC_STATES[email]["detail"] = detail
-        if screenshot is not None: SYNC_STATES[email]["screenshot"] = screenshot
-        print(f"[sync {email}] {status}: {detail or error_msg or code or ''}")
-
-    def take_screenshot(page):
-        import base64
+def _click_microsoft(page, progress):
+    """Passe l'ecran Keycloak « Se connecter avec Microsoft », s'il existe."""
+    for label in ("Microsoft", "Office 365"):
         try:
-            raw = page.screenshot()
-            return "data:image/png;base64," + base64.b64encode(raw).decode('ascii')
-        except:
-            return None
+            button = page.locator("text=%s" % label).first
+            button.wait_for(timeout=4000)
+            button.click()
+            page.wait_for_timeout(3000)
+            progress("Clic sur %s effectue" % label, page)
+            return
+        except Exception:
+            continue
+    progress("Aucun bouton Microsoft, page de login directe", page)
+
+
+def _pick_2fa_method(page, progress):
+    """Microsoft demande parfois de choisir la methode A2F avant d'afficher le code."""
+    selector = ('div[data-value="PhoneAppNotification"], div[data-value="PhoneAppOTP"], '
+                'div.table-row:has-text("Approve a request"), '
+                'div.table-row:has-text("Approuver")')
+    try:
+        option = page.locator(selector).first
+        if option.count() > 0:
+            progress("Choix de la methode A2F...", page)
+            option.click()
+            page.wait_for_timeout(2000)
+    except Exception:
+        pass
+
+
+def _read_2fa_code(page):
+    """Numero a taper sur le telephone (number matching), ou None."""
+    try:
+        element = page.locator(".displaySign")
+        element.wait_for(timeout=8000)
+        return (element.text_content() or "").strip() or None
+    except Exception:
+        return None
+
+
+def _confirm_stay_signed_in(page, progress):
+    """Attend la validation A2F puis coche « Rester connecte ». True si trouve."""
+    selector = ('input[type="button"][value="Oui"], input[type="submit"][value="Oui"], '
+                'input[id="idSIButton9"]')
+    for _ in range(A2F_POLL_ROUNDS):
+        try:
+            button = page.locator(selector)
+            if button.count() > 0 and button.first.is_visible():
+                button.first.click()
+                progress("Rester connecte : OK", page)
+                return True
+        except Exception:
+            pass
+        progress("Attente de la validation A2F...", page)
+        page.wait_for_timeout(A2F_POLL_INTERVAL_MS)
+    return False
+
+
+def _open_planning(page, progress):
+    try:
+        link = page.locator("text=Mon planning").first
+        link.wait_for(timeout=10000)
+        link.click()
+        progress("Ouverture de Mon planning", page)
+    except Exception:
+        page.goto(PLANNING_URL)
+        progress("Navigation directe vers le planning", page)
+    page.wait_for_timeout(3000)
+
+
+def _login(page, sync_id, email, password, progress, fail):
+    """Deroule le login Microsoft. Renvoie False si une etape bloquante echoue."""
+    progress("Ouverture du portail Auriga...", page)
+    page.goto(PORTAL_URL, timeout=15000)
+    page.wait_for_timeout(3000)
+
+    _click_microsoft(page, progress)
 
     try:
+        page.locator('input[type="email"]').wait_for(timeout=10000)
+        page.locator('input[type="email"]').fill(email)
+        page.locator('input[type="submit"]').click()
+        page.wait_for_timeout(2000)
+        progress("Email envoye, attente du mot de passe...", page)
+    except Exception as exc:
+        fail("Champ email introuvable : %s" % exc, page)
+        return False
+
+    try:
+        page.locator('input[type="password"]').wait_for(timeout=10000)
+        page.locator('input[type="password"]').fill(password)
+        page.locator('input[type="submit"]').click()
+    except Exception as exc:
+        fail("Champ mot de passe introuvable : %s" % exc, page)
+        return False
+
+    _pick_2fa_method(page, progress)
+
+    code = _read_2fa_code(page)
+    if code:
+        _update(sync_id, status="waiting_2fa", code=code,
+                detail="Code A2F : %s" % code, screenshot=_screenshot(page))
+    else:
+        _update(sync_id, status="waiting_2fa",
+                code="Approuvez sur votre telephone",
+                detail="Aucun numero affiche", screenshot=_screenshot(page))
+
+    _confirm_stay_signed_in(page, progress)
+    return True
+
+
+def _wait_for_token(page, token_box, progress):
+    for remaining in range(TOKEN_TIMEOUT_SECONDS, 0, -1):
+        if token_box[0]:
+            return True
+        progress("Attente du token... (%ds)" % remaining, page)
+        page.wait_for_timeout(1000)
+    return bool(token_box[0])
+
+
+def _run_sync(sync_id, email, password):
+    def progress(detail, page=None, status="logging_in"):
+        _update(sync_id, status=status, detail=detail,
+                screenshot=_screenshot(page) if page else None)
+        print("[sync %s] %s" % (sync_id[:8], detail))
+
+    def fail(message, page=None):
+        _update(sync_id, status="error", error_msg=message,
+                screenshot=_screenshot(page) if page else None)
+        print("[sync %s] erreur : %s" % (sync_id[:8], message))
+
+    browser = None
+    try:
         with sync_playwright() as playwright:
-            set_status("logging_in", detail="Lancement du navigateur...")
+            progress("Lancement du navigateur...")
             browser = playwright.chromium.launch(headless=True)
             context = browser.new_context(viewport={"width": 800, "height": 800})
             page = context.new_page()
 
-            token_found = [None]
-            def handle_request(request):
-                if "plannings/me" in request.url and not token_found[0]:
-                    token = request.headers.get("authorization")
-                    if token:
-                        token_found[0] = token
-            page.on("request", handle_request)
-            
-            set_status("logging_in", detail="Ouverture du portail Auriga...")
-            page.goto("https://auriga.ipsa.fr/", timeout=15000)
-            page.wait_for_timeout(3000)
-            set_status("logging_in", detail="Page Auriga chargee", screenshot=take_screenshot(page))
-            
-            set_status("logging_in", detail="Recherche du bouton Microsoft...")
-            try:
-                page.locator("text=Microsoft").wait_for(timeout=4000)
-                page.locator("text=Microsoft").first.click()
-                page.wait_for_timeout(3000)
-                set_status("logging_in", detail="Clic sur Microsoft OK", screenshot=take_screenshot(page))
-            except Exception as e:
-                set_status("logging_in", detail=f"Bouton Microsoft non trouve", screenshot=take_screenshot(page))
+            token_box = [None]
 
-            set_status("logging_in", detail="Attente du champ email...")
-            try:
-                page.locator('input[type="email"]').wait_for(timeout=10000)
-                page.locator('input[type="email"]').fill(email)
-                page.locator('input[type="submit"]').click()
-                page.wait_for_timeout(2000)
-                set_status("logging_in", detail="Email envoye, attente mot de passe...", screenshot=take_screenshot(page))
-            except Exception as e:
-                set_status("error", error_msg=f"Champ email introuvable: {e}", screenshot=take_screenshot(page))
-                browser.close()
+            def capture_token(request):
+                if "plannings/me" in request.url and not token_box[0]:
+                    token_box[0] = request.headers.get("authorization")
+
+            page.on("request", capture_token)
+
+            if not _login(page, sync_id, email, password, progress, fail):
                 return
-            
-            try:
-                page.locator('input[type="password"]').wait_for(timeout=10000)
-                page.locator('input[type="password"]').fill(password)
-                page.locator('input[type="submit"]').click()
-                set_status("logging_in", detail="Mot de passe envoye, attente A2F...")
-            except Exception as e:
-                set_status("error", error_msg=f"Champ mot de passe introuvable: {e}")
-                browser.close()
+
+            _open_planning(page, progress)
+
+            progress("Attente du token d'authentification...")
+            if not _wait_for_token(page, token_box, progress):
+                fail("Token non recupere apres %ds (A2F non validee ?)"
+                     % TOKEN_TIMEOUT_SECONDS, page)
                 return
-            
-            # Choix de la méthode A2F (parfois Microsoft demande de choisir)
+
+            progress("Telechargement du planning...", status="downloading")
+            payloads = ics_builder.fetch_all(token_box[0])
+            events = ics_builder.extract_events(payloads)
+            if not events:
+                fail("Aucun cours recupere depuis l'API Auriga.", page)
+                return
+
+            destination = storage.save_schedule(email, ics_builder.build_ics(events))
+            _drop_screenshot(sync_id)
+            _update(sync_id, status="success",
+                    detail="%d cours enregistres (%s)" % (len(events), destination))
+            print("[sync %s] termine : %d cours -> %s"
+                  % (sync_id[:8], len(events), destination))
+    except Exception as exc:
+        fail(str(exc))
+    finally:
+        if browser is not None:
             try:
-                # On clique sur le premier bouton de la liste qui correspond à une notification
-                option_push = page.locator('div[data-value="PhoneAppNotification"], div[data-value="PhoneAppOTP"], div.table-row:has-text("Approve a request"), div.table-row:has-text("Approuver")').first
-                if option_push.count() > 0:
-                    set_status("logging_in", detail="Choix de la méthode A2F en cours...", screenshot=take_screenshot(page))
-                    option_push.click()
-                    page.wait_for_timeout(2000)
+                browser.close()
             except Exception:
                 pass
 
-            # Code A2F
-            try:
-                a2f_elem = page.locator('.displaySign')
-                a2f_elem.wait_for(timeout=8000)
-                code = a2f_elem.text_content().strip()
-                set_status("waiting_2fa", code=code, detail=f"Code A2F: {code}", screenshot=take_screenshot(page))
-            except Exception:
-                set_status("waiting_2fa", code="Approuvez sur votre telephone", detail="Pas de numero affiche", screenshot=take_screenshot(page))
 
-            # Rester connecte
-            set_status("waiting_2fa", detail="Attente validation A2F + bouton Rester connecte...")
-            
-            # Polling pour prendre des screenshots pendant l'attente
-            kmsi_found = False
-            for _ in range(15):  # 15 * 2s = 30s max
-                try:
-                    kmsi = page.locator('input[type="button"][value="Oui"], input[type="submit"][value="Oui"], input[id="idSIButton9"]')
-                    if kmsi.count() > 0 and kmsi.first.is_visible():
-                        kmsi.first.click()
-                        kmsi_found = True
-                        set_status("logging_in", detail="Rester connecte: OK", screenshot=take_screenshot(page))
-                        break
-                except:
-                    pass
-                set_status("waiting_2fa", detail="Attente validation A2F...", screenshot=take_screenshot(page))
-                page.wait_for_timeout(2000)
-                
-            if not kmsi_found:
-                set_status("logging_in", detail=f"Bouton Rester connecte non trouve, on continue...", screenshot=take_screenshot(page))
-
-            # Mon planning
-            set_status("logging_in", detail="Ouverture de Mon planning...")
-            try:
-                planning_link = page.locator('text=Mon planning').first
-                planning_link.wait_for(timeout=10000)
-                planning_link.click()
-                page.wait_for_timeout(3000)
-                set_status("logging_in", detail="Clic sur Mon planning OK", screenshot=take_screenshot(page))
-            except Exception:
-                page.goto("https://auriga.ipsa.fr/#/mainContent/menuEntry/227/planning")
-                page.wait_for_timeout(3000)
-                set_status("logging_in", detail="Navigation directe vers le planning", screenshot=take_screenshot(page))
-
-            # Attente token
-            set_status("logging_in", detail="Attente du token d'authentification...")
-            timeout_count = 30
-            while not token_found[0] and timeout_count > 0:
-                set_status("logging_in", detail=f"Attente du token... ({timeout_count}s)", screenshot=take_screenshot(page))
-                page.wait_for_timeout(1000)
-                timeout_count -= 1
-                
-            if not token_found[0]:
-                set_status("error", error_msg="Token non recupere apres 30s (A2F non validee ?)", screenshot=take_screenshot(page))
-                browser.close()
-                return
-
-            SYNC_STATES[email]["status"] = "downloading"
-            
-            captured_data = []
-            current = datetime.date(2026, 8, 1)
-            end_year = datetime.date(2028, 8, 1)
-            while current < end_year:
-                chunk_end = current + datetime.timedelta(days=27)
-                s_str = current.strftime("%Y-%m-%d")
-                e_str = chunk_end.strftime("%Y-%m-%d")
-                data = fetch_month(token_found[0], s_str, e_str)
-                if data:
-                    captured_data.append({"data": data})
-                current = chunk_end + datetime.timedelta(days=1)
-
-            convert_to_ics(captured_data, email)
-            SYNC_STATES[email]["status"] = "success"
-            browser.close()
-            
-    except Exception as e:
-        SYNC_STATES[email]["status"] = "error"
-        SYNC_STATES[email]["error_msg"] = str(e)
+# --------------------------------------------------------------------------
+# API publique
+# --------------------------------------------------------------------------
 
 def start_sync(email, password):
-    global SYNC_STATES
-    if email not in SYNC_STATES:
-        SYNC_STATES[email] = {}
-        
-    if SYNC_STATES[email].get("status") in ["logging_in", "waiting_2fa", "downloading"]:
-        return False
-    
-    SYNC_STATES[email] = {
-        "status": "idle",
-        "code": None,
-        "error_msg": None
-    }
-    
-    t = threading.Thread(target=_run_playwright, args=(email, password))
-    t.start()
-    return True
+    """Lance une synchronisation et renvoie son identifiant.
 
-def get_status(email):
-    return SYNC_STATES.get(email, {"status": "idle"})
+    Leve ValueError si les identifiants sont absents ou malformes, SyncBusy si
+    le serveur est deja occupe.
+    """
+    if not email or not password:
+        raise ValueError("Email et mot de passe requis.")
+    storage.cache_key(email)  # leve ValueError si l'email est invalide
+
+    sync_id = secrets.token_urlsafe(24)
+    with _lock:
+        _prune_locked()
+        if _active_count_locked() >= MAX_CONCURRENT_SYNCS:
+            raise SyncBusy("Trop de synchronisations en cours, reessaie dans une minute.")
+        if any(s["email"] == email and s["status"] in ACTIVE_STATUSES
+               for s in _states.values()):
+            raise SyncBusy("Une synchronisation est deja en cours pour ce compte.")
+
+        _states[sync_id] = {
+            "status": "starting",
+            "code": None,
+            "detail": "Demarrage...",
+            "error_msg": None,
+            "screenshot": None,
+            "email": email,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+
+    thread = threading.Thread(target=_run_sync, args=(sync_id, email, password),
+                              daemon=True)
+    thread.start()
+    return sync_id

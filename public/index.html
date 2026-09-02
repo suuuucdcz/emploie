@@ -16,11 +16,11 @@
 <body>
   <header class="topbar">
     <div class="topbar-row">
-      <div class="month-nav" style="display: flex; align-items: center; gap: 4px;">
+      <div class="month-nav">
         <button id="prev-btn" class="btn-ghost btn-icon" type="button" aria-label="Précédent">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
         </button>
-        <h1 id="month-label" style="min-width: 130px; text-align: center;">Emploi du temps</h1>
+        <h1 id="month-label">Emploi du temps</h1>
         <button id="next-btn" class="btn-ghost btn-icon" type="button" aria-label="Suivant">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
         </button>
@@ -42,21 +42,21 @@
   </header>
 
   <!-- Modal de synchronisation -->
-  <div id="sync-modal" class="modal" hidden>
+  <div id="sync-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="sync-title" hidden>
     <div class="modal-content">
-      <h2 style="margin: 0; font-size: 18px;">Mettre à jour via Microsoft</h2>
-      <p style="font-size: 14px; color: var(--muted); margin-bottom: 10px;">Le serveur en arrière-plan va se connecter silencieusement pour aspirer ton année.</p>
-      
-      <input type="email" id="sync-email" placeholder="Email de l'école" />
-      <input type="password" id="sync-password" placeholder="Mot de passe" />
-      
-      <button id="sync-start-btn" class="btn-primary">Lancer la récupération</button>
-      
-      <div id="sync-status" style="margin-top: 10px; font-size: 14px; text-align: center;"></div>
-      <div id="sync-a2f" style="font-size: 40px; font-weight: bold; color: var(--accent); text-align: center; display: none; margin: 15px 0;"></div>
-      <img id="sync-screenshot" style="width: 100%; border-radius: 8px; display: none; margin-top: 10px;" />
-      
-      <button id="sync-close-btn" class="btn-ghost" style="margin-top: 10px; width: 100%;">Fermer</button>
+      <h2 id="sync-title">Mettre à jour via Microsoft</h2>
+      <p class="modal-hint">Le serveur en arrière-plan va se connecter pour aspirer ton année.</p>
+
+      <input type="email" id="sync-email" autocomplete="username" placeholder="Email de l'école">
+      <input type="password" id="sync-password" autocomplete="current-password" placeholder="Mot de passe">
+
+      <button id="sync-start-btn" class="btn-primary" type="button">Lancer la récupération</button>
+
+      <div id="sync-status" class="sync-status" role="status" aria-live="polite"></div>
+      <div id="sync-a2f" class="sync-a2f" hidden></div>
+      <img id="sync-screenshot" class="sync-screenshot" alt="Ce que voit le robot" hidden>
+
+      <button id="sync-close-btn" class="btn-ghost sync-close" type="button">Fermer</button>
     </div>
   </div>
 

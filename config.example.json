@@ -1,7 +1,5 @@
 {
-  "_comment": "Copie ce fichier en config.json et colle ton URL ICS Aurion dans ics_url. config.json est ignore par git : ce lien vaut un mot de passe, ne le partage pas.",
-  "ics_url": "",
+  "_comment": "Copie ce fichier en config.json. Aucun secret ici : les identifiants Auriga sont saisis dans l'appli, et Supabase se configure via les variables d'environnement SUPABASE_URL et SUPABASE_KEY.",
   "port": 8787,
-  "refresh_seconds": 900,
-  "timeout_seconds": 20
+  "refresh_seconds": 900
 }
