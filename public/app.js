@@ -293,71 +293,139 @@ function gapRow(minutes) {
   return node;
 }
 
-// La semaine sert a repondre \u00AB c'est quand, mon prochain TP ? \u00BB : on veut de la
-// densite, pas le detail. Les cartes completes restent la vue jour.
+/* --------------------------------------------------------- vue semaine */
+
+// Grille horaire : les jours en colonnes, les heures en lignes, les cours
+// places a leur position reelle. On voit la forme de la semaine \u2014 les trous,
+// les journees chargees \u2014 sans rien lire.
+
+function hourOf(date) {
+  return date.getHours() + date.getMinutes() / 60;
+}
+
+function endHourOf(evt) {
+  const end = hourOf(evt._end);
+  // Un cours qui deborde sur le lendemain se termine visuellement a minuit.
+  return end <= hourOf(evt._start) ? 24 : end;
+}
+
 function renderWeek() {
   const monday = mondayOf(state.selected);
   const now = new Date();
   const today = startOfDay(now);
-  let total = 0;
 
+  const columns = [];
   for (let i = 0; i < 7; i += 1) {
     const day = addDays(monday, i);
     const events = eventsOn(day);
-    if (!events.length) continue;
-    total += events.length;
-
-    const heading = document.createElement('div');
-    heading.className = 'day-heading';
-    if (sameDay(day, today)) heading.classList.add('is-today');
-    heading.textContent = fmtDayLong(day);
-    el.content.appendChild(heading);
-
-    const list = document.createElement('div');
-    list.className = 'week-list';
-    events.forEach((evt) => list.appendChild(weekRow(evt, now)));
-    el.content.appendChild(list);
+    // Le week-end n'occupe une colonne que s'il a cours.
+    if (i >= 5 && !events.length) continue;
+    columns.push({ day, events });
   }
 
-  if (!total) {
+  const all = columns.reduce((acc, col) => acc.concat(col.events), []);
+  if (!all.length) {
     const empty = document.createElement('p');
     empty.className = 'empty';
     empty.innerHTML = '<span class="big">\uD83C\uDF89</span>Aucun cours cette semaine.';
     el.content.appendChild(empty);
+    return;
   }
+
+  // Amplitude reelle de la semaine : inutile d'afficher la nuit.
+  const first = Math.max(0, Math.floor(Math.min(...all.map((e) => hourOf(e._start)))));
+  const last = Math.min(24, Math.ceil(Math.max(...all.map(endHourOf))));
+  const span = Math.max(1, last - first);
+
+  const grid = document.createElement('div');
+  grid.className = 'grid';
+  grid.style.setProperty('--cols', String(columns.length));
+  grid.style.setProperty('--span', String(span));
+
+  const corner = document.createElement('div');
+  corner.className = 'grid-corner';
+  grid.appendChild(corner);
+
+  const head = document.createElement('div');
+  head.className = 'grid-days';
+  columns.forEach(({ day }) => {
+    const cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = `grid-day${sameDay(day, today) ? ' is-today' : ''}`;
+    cell.innerHTML = `
+      <span class="dow">${day.toLocaleDateString('fr-FR', { weekday: 'short' }).slice(0, 3)}</span>
+      <span class="dom">${day.getDate()}</span>`;
+    cell.setAttribute('aria-label', fmtDayLong(day));
+    cell.addEventListener('click', () => openDay(day));
+    head.appendChild(cell);
+  });
+  grid.appendChild(head);
+
+  const hours = document.createElement('div');
+  hours.className = 'grid-hours';
+  for (let h = first; h < last; h += 1) {
+    const label = document.createElement('span');
+    label.className = 'grid-hour';
+    label.textContent = String(h).padStart(2, '0');
+    hours.appendChild(label);
+  }
+  grid.appendChild(hours);
+
+  const canvas = document.createElement('div');
+  canvas.className = 'grid-canvas';
+  columns.forEach(({ day, events }) => {
+    const col = document.createElement('div');
+    col.className = `grid-col${sameDay(day, today) ? ' is-today' : ''}`;
+    events.forEach((evt) => col.appendChild(slot(evt, first, now)));
+    canvas.appendChild(col);
+  });
+
+  // Le trait de l'heure courante, s'il tombe dans la plage affichee.
+  const nowHour = hourOf(now);
+  if (columns.some(({ day }) => sameDay(day, today)) && nowHour >= first && nowHour <= last) {
+    const line = document.createElement('div');
+    line.className = 'grid-now';
+    line.dataset.live = 'grid-now';
+    line.dataset.first = String(first);
+    line.dataset.last = String(last);
+    line.style.top = `calc(${(nowHour - first).toFixed(3)} * var(--hour))`;
+    canvas.appendChild(line);
+  }
+
+  grid.appendChild(canvas);
+  el.content.appendChild(grid);
 }
 
-function weekRow(evt, now) {
+function slot(evt, first, now) {
   const ongoing = evt._start <= now && now < evt._end;
   const past = evt._end <= now;
+  const top = hourOf(evt._start) - first;
+  const height = Math.max(endHourOf(evt) - hourOf(evt._start), 0.42);
 
-  const row = document.createElement('button');
-  row.type = 'button';
-  row.className = `week-row${ongoing ? ' now' : ''}${past ? ' past' : ''}`;
-  row.style.setProperty('--kind', `var(--${evt.kind.toLowerCase()})`);
+  const node = document.createElement('button');
+  node.type = 'button';
+  node.className = `slot${ongoing ? ' now' : ''}${past ? ' past' : ''}`;
+  node.style.setProperty('--kind', `var(--${evt.kind.toLowerCase()})`);
+  node.style.top = `calc(${top.toFixed(3)} * var(--hour))`;
+  node.style.height = `calc(${height.toFixed(3)} * var(--hour) - 3px)`;
 
-  const details = [KIND_LABEL[evt.kind] || 'COURS'];
-  if (evt.location) details.push(evt.location);
+  // Le contenu deborde et se fait rogner : un creneau court montre son type,
+  // un creneau long montre aussi le titre et la salle.
+  node.innerHTML = `
+    <span class="slot-kind">${KIND_LABEL[evt.kind] || 'COURS'}</span>
+    <span class="slot-title">${escapeHtml(evt.title || evt.rawTitle || 'Cours')}</span>
+    ${evt.location ? `<span class="slot-room">${escapeHtml(evt.location)}</span>` : ''}`;
+  node.setAttribute('aria-label',
+    `${fmtTime(evt._start)} ${evt.title || 'Cours'}${evt.location ? ', ' + evt.location : ''}`);
+  node.addEventListener('click', () => openDay(evt._start));
+  return node;
+}
 
-  row.innerHTML = `
-    <span class="week-row-time">
-      <span class="start">${evt.allDay ? 'Jour' : fmtTime(evt._start)}</span>
-      <span class="end">${evt.allDay ? 'entier' : fmtTime(evt._end)}</span>
-    </span>
-    <span class="week-row-main">
-      <span class="week-row-title">${escapeHtml(evt.title || evt.rawTitle || 'Cours')}</span>
-      <span class="week-row-sub">${escapeHtml(details.join(' \u00B7 '))}</span>
-    </span>
-    ${ongoing ? '<span class="week-row-live">EN COURS</span>' : ''}`;
-
-  // Un appui ouvre la journee complete : la vue semaine reste un index.
-  row.addEventListener('click', () => {
-    state.selected = startOfDay(evt._start);
-    state.view = 'day';
-    render();
-    el.content.scrollIntoView({ block: 'start' });
-  });
-  return row;
+function openDay(date) {
+  state.selected = startOfDay(date);
+  state.view = 'day';
+  render();
+  window.scrollTo({ top: 0 });
 }
 
 function card(evt, now = new Date()) {
@@ -487,6 +555,17 @@ function updateLive(now) {
   });
   const marker = document.querySelector('[data-live="now-time"]');
   if (marker) marker.textContent = fmtTime(now);
+
+  const line = document.querySelector('[data-live="grid-now"]');
+  if (line) {
+    // Passe minuit, hourOf() repart de 0 : sans ce garde-fou le trait
+    // remonterait au-dessus de la grille.
+    const first = Number(line.dataset.first);
+    const offset = hourOf(now) - first;
+    const inRange = offset >= 0 && offset <= Number(line.dataset.last) - first;
+    line.hidden = !inRange;
+    if (inRange) line.style.top = `calc(${offset.toFixed(3)} * var(--hour))`;
+  }
 }
 
 function tick() {

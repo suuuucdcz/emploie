@@ -428,72 +428,156 @@ body {
 
 /* ---------------------------------------------------------- vue semaine */
 
-.week-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+/* Grille horaire. Les colonnes se partagent la largeur restante : a 375 px on
+   tient les cinq jours ouvres sans defilement horizontal. */
+
+.grid {
+  --hour: 54px;
+  --gutter: 30px;
+  display: grid;
+  grid-template-columns: var(--gutter) 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 4px;
 }
 
-.week-row {
+.grid-corner { grid-column: 1; grid-row: 1; }
+
+.grid-days {
+  grid-column: 2;
+  grid-row: 1;
+  display: grid;
+  grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  gap: 2px;
+  padding-bottom: 8px;
+}
+
+.grid-day {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 2px 0;
+  border-radius: 10px;
+}
+.grid-day .dow { font-size: 11px; font-weight: 600; text-transform: uppercase; }
+.grid-day .dom { font-size: 15px; font-weight: 700; color: var(--text); }
+.grid-day.is-today .dow,
+.grid-day.is-today .dom { color: var(--accent); }
+
+.grid-hours {
+  grid-column: 1;
+  grid-row: 2;
+  display: grid;
+  grid-auto-rows: var(--hour);
+}
+
+.grid-hour {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-align: right;
+  /* cale le libelle sur le trait, pas au milieu de la case */
+  transform: translateY(-6px);
+}
+
+.grid-canvas {
+  grid-column: 2;
+  grid-row: 2;
   position: relative;
   display: grid;
-  grid-template-columns: 50px 1fr auto;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 10px 14px 10px 16px;
+  grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  gap: 2px;
+  height: calc(var(--span) * var(--hour));
+  /* les traits horaires sont dessines par le fond : aucun element inutile */
+  background-image: repeating-linear-gradient(
+    to bottom, var(--line) 0 1px, transparent 1px var(--hour));
+  border-radius: 10px;
+}
+
+.grid-col { position: relative; }
+.grid-col.is-today { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+.slot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 4px;
   border: none;
-  border-radius: 14px;
-  background: var(--surface-solid);
-  box-shadow: var(--shadow);
+  border-left: 3px solid var(--kind, var(--autre));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--kind, var(--autre)) 18%, var(--surface-solid));
   color: var(--text);
   font: inherit;
   text-align: left;
   cursor: pointer;
-  overflow: hidden;
-  transition: transform .15s ease;
 }
 
-.week-row:active { transform: scale(0.985); }
-.week-row.now { box-shadow: 0 0 0 2px var(--accent), var(--shadow); }
-.week-row.past { opacity: .62; }
+.slot.past { opacity: .55; }
+.slot.now { box-shadow: 0 0 0 2px var(--accent); }
+.slot:active { filter: brightness(0.95); }
 
-.week-row::before {
+.slot-kind {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  color: var(--kind, var(--autre));
+}
+
+.slot-title {
+  /* 10 px sur telephone : a cette taille la plupart des mots d'une seule
+     piece (« Aerodynamique ») tiennent dans une colonne de 63 px, ce qui
+     evite les coupures au milieu des mots. */
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.18;
+  /* `anywhere` coupait n'importe ou. On casse d'abord entre les mots, et on
+     cesure seulement quand un mot depasse vraiment. */
+  overflow-wrap: break-word;
+  hyphens: auto;
+  -webkit-hyphens: auto;
+}
+
+.slot-room { font-size: 10px; color: var(--muted); }
+
+.grid-now[hidden] { display: none; }
+
+.grid-now {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.grid-now::before {
   content: "";
   position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 4px;
-  background: var(--kind, var(--autre));
-}
-
-.week-row-time {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.25;
-}
-.week-row-time .start { font-size: 14px; font-weight: 700; }
-.week-row-time .end { font-size: 12px; color: var(--muted); }
-
-.week-row-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-
-.week-row-title {
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-
-.week-row-sub { font-size: 12px; color: var(--muted); }
-
-.week-row-live {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .06em;
-  color: #fff;
+  left: -3px;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   background: var(--accent);
-  padding: 3px 7px;
-  border-radius: 999px;
-  white-space: nowrap;
+}
+
+/* Plus de place : on peut respirer. */
+@media (min-width: 560px) {
+  .grid { --hour: 66px; --gutter: 38px; }
+  .slot-title { font-size: 13px; }
+  .slot-kind { font-size: 10px; }
+  .slot-room { font-size: 11px; }
 }
 
 .day-heading.is-today { color: var(--accent); }

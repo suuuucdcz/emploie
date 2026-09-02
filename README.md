@@ -134,8 +134,13 @@ quiconque connait l'adresse de quelqu'un.
 
 ## Interface
 
-- vue **jour** (par defaut) et vue **semaine** ;
+- vue **jour** (par defaut) et vue **semaine** en grille horaire : les jours en
+  colonnes, les heures en lignes, un appui sur un creneau ouvre la journee ;
+- **le cours en cours est suivi en direct** : barre de progression sur la carte
+  et dans le bandeau, temps restant qui se met a jour, trait de l'heure
+  courante dans la grille de la semaine ;
 - bandeau « en cours » / « prochain cours » avec le temps restant ;
+- les trous de 20 min ou plus sont affiches entre deux cours ;
 - balayage horizontal ou fleches gauche/droite pour changer de jour ;
 - theme clair/sombre automatique.
 
