@@ -34,15 +34,23 @@ stocke, il faut le retaper a chaque synchronisation.
 | `port` | `8787` | port d'ecoute (`$PORT` de l'hebergeur a la priorite) |
 | `refresh_seconds` | `900` | duree de vie du cache memoire d'un agenda |
 
-Le stockage se choisit par variables d'environnement :
+Tout le reste passe par des variables d'environnement. En local, copie
+`.env.example` en `.env` et remplis-le — le fichier est lu au demarrage et il
+est dans le `.gitignore`. En hebergement, definis-les dans le dashboard Render.
 
 | Variable | Effet |
 | --- | --- |
 | `SUPABASE_URL` + `SUPABASE_KEY` | agendas ranges dans la table `schedules` |
-| (aucune) | repli sur le dossier local `cache/` |
+| (aucune des deux) | repli sur le dossier local `cache/` |
+| `AURIGA_EMAIL` + `AURIGA_PASSWORD` | identifiants de `update_planning.py` ; sinon demandes au clavier |
+| `PORT` | surcharge le port de `config.json` |
 
 Supabase est necessaire en hebergement : le disque de Render est ephemere, un
 redemarrage effacerait `cache/`.
+
+> Aucun identifiant ne doit revenir dans le code. Les seuls endroits ou ils ont
+> le droit d'exister sont `.env` (local, ignore) et le dashboard de
+> l'hebergeur.
 
 ## Depuis le telephone
 
@@ -66,6 +74,7 @@ HTTPS — un tunnel Cloudflare, ou un hebergement.
 | `sync_worker.py` | Robot Playwright : login Microsoft, A2F, capture du token |
 | `ics_builder.py` | Appels API Auriga + generation de l'ICS (RFC 5545) |
 | `storage.py` | Ou vit un agenda : Supabase ou `cache/` |
+| `envfile.py` | Chargement du `.env` local |
 | `ics.py` | Parseur ICS : VEVENT, fuseaux, RRULE/EXDATE, detection CM/TD/TP |
 | `public/` | La PWA (`index.html`, `app.js`, `styles.css`, `sw.js`, manifeste) |
 | `update_planning.py` | Synchronisation manuelle en ligne de commande |

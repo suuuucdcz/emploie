@@ -1,22 +1,11 @@
 """Verifie l'aller-retour Supabase via storage.py : python test_supabase.py
 
-Les identifiants sont en dur ici pour pouvoir tester sans configurer
-l'environnement ; ils ne sont utilises que si SUPABASE_URL / SUPABASE_KEY ne
-sont pas deja definis.
+Necessite SUPABASE_URL et SUPABASE_KEY (fichier .env local ou variables
+d'environnement). Ce test ecrit vraiment dans la table `schedules`, sur la
+ligne `test@ipsa.fr`.
 """
 
-import os
-
-os.environ.setdefault("SUPABASE_URL", "https://dzcixbkxzjmtoiqgibni.supabase.co")
-os.environ.setdefault(
-    "SUPABASE_KEY",
-    "CLE_SUPABASE_RETIREE"
-    "CLE_SUPABASE_RETIREE"
-    "CLE_SUPABASE_RETIREE"
-    "CLE_SUPABASE_RETIREE",
-)
-
-import storage  # noqa: E402  (doit voir les variables ci-dessus)
+import storage
 
 TEST_EMAIL = "test@ipsa.fr"
 TEST_ICS = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"
@@ -25,7 +14,8 @@ TEST_ICS = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n"
 def main():
     url, _ = storage.supabase_config()
     if not url:
-        print("Supabase non configure.")
+        print("Supabase non configure : definis SUPABASE_URL et SUPABASE_KEY")
+        print("(dans un fichier .env a la racine, voir .env.example).")
         return 1
 
     print("Ecriture...")

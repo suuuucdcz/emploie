@@ -10,6 +10,12 @@ import re
 import urllib.parse
 import urllib.request
 
+import envfile
+
+# Tout passe par ce module pour lire ou ecrire un agenda : c'est donc ici que
+# le .env local doit etre charge, avant la premiere lecture d'os.environ.
+envfile.load()
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(ROOT, "cache")
 

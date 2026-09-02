@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 
+# Secrets
+.env
+
 # Local data & caches
 cache/
 planning_capture.json

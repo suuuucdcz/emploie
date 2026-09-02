@@ -1,6 +1,7 @@
 # Rien de local ne doit finir dans l'image.
 .git
 .gitignore
+.env
 __pycache__/
 *.pyc
 

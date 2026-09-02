@@ -5,19 +5,29 @@ ligne de commande : meme code de connexion, meme generation d'ICS, meme
 stockage. Utile pour debugger sans lancer le serveur.
 
     python update_planning.py
+
+Les identifiants viennent de AURIGA_EMAIL et AURIGA_PASSWORD (fichier .env ou
+variables d'environnement). A defaut, ils sont demandes au clavier.
 """
 
+import getpass
+import os
 import sys
 import time
 
+import envfile
 import sync_worker
-
-# --- TES IDENTIFIANTS ---
-EMAIL = "mathis.derory@ipsa.fr"
-PASSWORD = "MOT_DE_PASSE_RETIRE"
 
 POLL_SECONDS = 2
 TERMINAL_STATUSES = ("success", "error", "unknown")
+
+
+def credentials():
+    """(email, mot de passe), depuis l'environnement ou saisis au clavier."""
+    envfile.load()
+    email = os.environ.get("AURIGA_EMAIL") or input("Email de l'ecole : ").strip()
+    password = os.environ.get("AURIGA_PASSWORD") or getpass.getpass("Mot de passe : ")
+    return email, password
 
 
 def main():
@@ -25,8 +35,9 @@ def main():
     print("MISE A JOUR DE L'EMPLOI DU TEMPS")
     print("=" * 53)
 
+    email, password = credentials()
     try:
-        sync_id = sync_worker.start_sync(EMAIL, PASSWORD)
+        sync_id = sync_worker.start_sync(email, password)
     except (ValueError, sync_worker.SyncBusy) as exc:
         print("Impossible de demarrer : %s" % exc)
         return 1
