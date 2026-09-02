@@ -725,51 +725,50 @@ body {
 
 /* ------------------------------------------------- barre d'installation PWA */
 
+/* Discrete : une ligne de texte secondaire, pas une carte. Elle ne doit pas
+   concurrencer l'emploi du temps, qui est la raison d'etre de la page. */
+
 .install-bar {
-  position: relative;
   display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 12px 16px 0;
-  /* marge a droite : la croix est posee dans ce coin */
-  padding: 12px 44px 12px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-solid);
-  box-shadow: var(--shadow);
+  align-items: center;
+  gap: 8px;
+  margin: 10px 18px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .install-bar[hidden] { display: none; }
 
 .install-text {
   margin: 0;
-  font-size: 13px;
-  line-height: 1.4;
-  color: var(--muted);
+  flex: 1;
+  min-width: 0;
 }
 
-.install-bar .btn-primary {
-  padding: 11px 14px;
-  font-size: 15px;
+.install-action {
+  flex-shrink: 0;
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
 }
-
-.install-bar .btn-primary[hidden] { display: none; }
+.install-action[hidden] { display: none; }
+.install-action:active { opacity: .6; }
 
 .install-dismiss {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  padding: 0 9px;
-  font-size: 20px;
-  line-height: 28px;
-}
-
-/* Au-dela du telephone, tout tient sur une ligne. */
-@media (min-width: 560px) {
-  .install-bar {
-    flex-direction: row;
-    align-items: center;
-  }
-  .install-text { flex: 1; }
-  .install-bar .btn-primary { width: auto; flex-shrink: 0; }
+  flex-shrink: 0;
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: .7;
 }

@@ -848,7 +848,7 @@ let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault();
   deferredPrompt = event;
-  showInstallBar('Installe l\'appli pour l\'ouvrir en plein écran, sans la barre du navigateur.', true);
+  showInstallBar('Ajouter à l\'écran d\'accueil', true);
 });
 
 install.btn.addEventListener('click', async () => {
@@ -875,5 +875,5 @@ window.addEventListener('appinstalled', () => {
 // iOS ne declenche jamais beforeinstallprompt : la seule voie est le menu
 // Partager, donc on explique ou cliquer.
 if (isIos() && !isStandalone()) {
-  showInstallBar('Pour installer : appuie sur Partager, puis « Sur l\'écran d\'accueil ».', false);
+  showInstallBar('Installer : Partager, puis « Sur l\'écran d\'accueil »', false);
 }
