@@ -163,6 +163,17 @@ def _run_playwright(email, password):
                 browser.close()
                 return
             
+            # Choix de la méthode A2F (parfois Microsoft demande de choisir)
+            try:
+                # On clique sur le premier bouton de la liste qui correspond à une notification
+                option_push = page.locator('div[data-value="PhoneAppNotification"], div[data-value="PhoneAppOTP"], div.table-row:has-text("Approve a request"), div.table-row:has-text("Approuver")').first
+                if option_push.count() > 0:
+                    set_status("logging_in", detail="Choix de la méthode A2F en cours...", screenshot=take_screenshot(page))
+                    option_push.click()
+                    page.wait_for_timeout(2000)
+            except Exception:
+                pass
+
             # Code A2F
             try:
                 a2f_elem = page.locator('.displaySign')
