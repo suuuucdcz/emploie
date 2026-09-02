@@ -29,6 +29,22 @@ A2F_POLL_ROUNDS = 15
 A2F_POLL_INTERVAL_MS = 2000
 TOKEN_TIMEOUT_SECONDS = 30
 
+# Le portail redirige en JavaScript vers Keycloak (autre domaine) : on attend
+# un element de la vraie page de connexion, pas un delai fixe.
+LOGIN_PAGE_TIMEOUT_MS = 30000
+LOGIN_READY_SELECTOR = "#social-oidc, #kc-form-login, input[type='email']"
+
+# `#social-oidc` est l'identifiant que Keycloak donne au fournisseur OIDC.
+# Les replis textuels sont insensibles a la casse : le portail affiche
+# « Se connecter avec microsoft », en minuscule.
+MICROSOFT_SELECTORS = (
+    "#social-oidc",
+    "a.kc-social-item",
+    "text=/se connecter avec\\s+microsoft/i",
+    "text=/microsoft/i",
+    "text=/office\\s*365/i",
+)
+
 _states = {}
 _lock = threading.Lock()
 
@@ -96,19 +112,69 @@ def _screenshot(page):
         return None
 
 
+def _visible_labels(page, limit=10):
+    """Libelles cliquables visibles : de quoi savoir ce que le robot avait sous
+    les yeux quand il n'a pas trouve ce qu'il cherchait."""
+    try:
+        labels = page.eval_on_selector_all(
+            "a, button, input[type=submit]",
+            "els => els.filter(e => e.offsetWidth || e.offsetHeight)"
+            ".map(e => (e.value || e.innerText || '').trim()).filter(Boolean)",
+        )
+    except Exception:
+        return []
+    return labels[:limit]
+
+
+def _on_microsoft(page):
+    """Vrai si on est deja sur la mire de connexion Microsoft."""
+    return "microsoftonline" in (page.url or "")
+
+
+def _wait_for_login_page(page, progress):
+    """Attend la vraie page de connexion.
+
+    auriga.ipsa.fr est une SPA qui redirige en JavaScript vers Keycloak, sur un
+    *autre domaine*. Cette redirection prend plusieurs secondes : chercher un
+    bouton avant qu'elle ait eu lieu echouait, et la navigation qui survenait
+    pendant l'attente detruisait le contexte du selecteur.
+    """
+    try:
+        page.wait_for_selector(LOGIN_READY_SELECTOR, timeout=LOGIN_PAGE_TIMEOUT_MS)
+    except Exception:
+        progress("Page de connexion non reconnue, on tente quand meme", page)
+    else:
+        progress("Page de connexion affichee", page)
+
+
 def _click_microsoft(page, progress):
-    """Passe l'ecran Keycloak « Se connecter avec Microsoft », s'il existe."""
-    for label in ("Microsoft", "Office 365"):
+    """Passe l'ecran Keycloak « Se connecter avec microsoft ».
+
+    Le bouton est `<a id="social-oidc">` ; on garde des replis par le texte au
+    cas ou l'identifiant Keycloak change. Le libelle est en minuscule sur le
+    portail, d'ou les expressions insensibles a la casse.
+    """
+    if _on_microsoft(page):
+        progress("Deja sur la mire Microsoft", page)
+        return True
+
+    for selector in MICROSOFT_SELECTORS:
         try:
-            button = page.locator("text=%s" % label).first
-            button.wait_for(timeout=4000)
+            button = page.locator(selector).first
+            button.wait_for(state="visible", timeout=5000)
             button.click()
-            page.wait_for_timeout(3000)
-            progress("Clic sur %s effectue" % label, page)
-            return
+            page.wait_for_load_state("domcontentloaded")
+            # Pas de guillemets typographiques : ce texte part aussi dans un
+            # print() vers la console Windows de update_planning.py.
+            progress("Clic sur 'se connecter avec microsoft'", page)
+            return True
         except Exception:
             continue
-    progress("Aucun bouton Microsoft, page de login directe", page)
+
+    labels = _visible_labels(page)
+    progress("Bouton Microsoft introuvable (%s) — visible a l'ecran : %s"
+             % (page.url, ", ".join(labels) if labels else "rien de cliquable"), page)
+    return False
 
 
 def _pick_2fa_method(page, progress):
@@ -169,19 +235,23 @@ def _open_planning(page, progress):
 def _login(page, sync_id, email, password, progress, fail):
     """Deroule le login Microsoft. Renvoie False si une etape bloquante echoue."""
     progress("Ouverture du portail Auriga...", page)
-    page.goto(PORTAL_URL, timeout=15000)
-    page.wait_for_timeout(3000)
+    page.goto(PORTAL_URL, timeout=30000)
 
+    _wait_for_login_page(page, progress)
     _click_microsoft(page, progress)
 
     try:
-        page.locator('input[type="email"]').wait_for(timeout=10000)
-        page.locator('input[type="email"]').fill(email)
+        # La mire Microsoft arrive apres une redirection : on lui laisse le
+        # temps d'apparaitre plutot que de supposer qu'elle est deja la.
+        champ = page.locator('input[type="email"]')
+        champ.wait_for(state="visible", timeout=20000)
+        champ.fill(email)
         page.locator('input[type="submit"]').click()
         page.wait_for_timeout(2000)
         progress("Email envoye, attente du mot de passe...", page)
-    except Exception as exc:
-        fail("Champ email introuvable : %s" % exc, page)
+    except Exception:
+        fail("Champ email introuvable sur %s — visible a l'ecran : %s"
+             % (page.url, ", ".join(_visible_labels(page)) or "rien de cliquable"), page)
         return False
 
     try:
