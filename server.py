@@ -73,7 +73,7 @@ def load_config(argv=None):
         config["ics_url"] = args.ics_url
     if args.ics_file:
         config["ics_file"] = args.ics_file
-    if args.port:
+    if args.port and not os.environ.get('PORT'):
         config["port"] = args.port
     config["insecure"] = bool(args.insecure)
 
