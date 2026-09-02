@@ -168,19 +168,30 @@ def _run_playwright(email, password):
                 a2f_elem = page.locator('.displaySign')
                 a2f_elem.wait_for(timeout=8000)
                 code = a2f_elem.text_content().strip()
-                set_status("waiting_2fa", code=code, detail=f"Code A2F: {code}")
+                set_status("waiting_2fa", code=code, detail=f"Code A2F: {code}", screenshot=take_screenshot(page))
             except Exception:
-                set_status("waiting_2fa", code="Approuvez sur votre telephone", detail="Pas de numero affiche")
+                set_status("waiting_2fa", code="Approuvez sur votre telephone", detail="Pas de numero affiche", screenshot=take_screenshot(page))
 
             # Rester connecte
             set_status("waiting_2fa", detail="Attente validation A2F + bouton Rester connecte...")
-            try:
-                kmsi = page.locator('input[type="button"][value="Oui"], input[type="submit"][value="Oui"], input[id="idSIButton9"]')
-                kmsi.wait_for(timeout=30000)
-                kmsi.click()
-                set_status("logging_in", detail="Rester connecte: OK")
-            except Exception as e:
-                set_status("logging_in", detail=f"Bouton Rester connecte non trouve: {e}")
+            
+            # Polling pour prendre des screenshots pendant l'attente
+            kmsi_found = False
+            for _ in range(15):  # 15 * 2s = 30s max
+                try:
+                    kmsi = page.locator('input[type="button"][value="Oui"], input[type="submit"][value="Oui"], input[id="idSIButton9"]')
+                    if kmsi.count() > 0 and kmsi.first.is_visible():
+                        kmsi.first.click()
+                        kmsi_found = True
+                        set_status("logging_in", detail="Rester connecte: OK", screenshot=take_screenshot(page))
+                        break
+                except:
+                    pass
+                set_status("waiting_2fa", detail="Attente validation A2F...", screenshot=take_screenshot(page))
+                page.wait_for_timeout(2000)
+                
+            if not kmsi_found:
+                set_status("logging_in", detail=f"Bouton Rester connecte non trouve, on continue...", screenshot=take_screenshot(page))
 
             # Mon planning
             set_status("logging_in", detail="Ouverture de Mon planning...")
@@ -188,20 +199,23 @@ def _run_playwright(email, password):
                 planning_link = page.locator('text=Mon planning').first
                 planning_link.wait_for(timeout=10000)
                 planning_link.click()
-                set_status("logging_in", detail="Clic sur Mon planning OK")
+                page.wait_for_timeout(3000)
+                set_status("logging_in", detail="Clic sur Mon planning OK", screenshot=take_screenshot(page))
             except Exception:
                 page.goto("https://auriga.ipsa.fr/#/mainContent/menuEntry/227/planning")
-                set_status("logging_in", detail="Navigation directe vers le planning")
+                page.wait_for_timeout(3000)
+                set_status("logging_in", detail="Navigation directe vers le planning", screenshot=take_screenshot(page))
 
             # Attente token
             set_status("logging_in", detail="Attente du token d'authentification...")
             timeout_count = 30
             while not token_found[0] and timeout_count > 0:
+                set_status("logging_in", detail=f"Attente du token... ({timeout_count}s)", screenshot=take_screenshot(page))
                 page.wait_for_timeout(1000)
                 timeout_count -= 1
                 
             if not token_found[0]:
-                set_status("error", error_msg="Token non recupere apres 30s (A2F non validee ?)")
+                set_status("error", error_msg="Token non recupere apres 30s (A2F non validee ?)", screenshot=take_screenshot(page))
                 browser.close()
                 return
 
