@@ -85,11 +85,10 @@ body {
   font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  text-align: left;
+  text-align: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -100,12 +99,17 @@ body {
 }
 
 .month-nav {
-  display: flex;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
   align-items: center;
   gap: 4px;
   flex: 1 1 auto;
   min-width: 0;
 }
+
+.month-nav #prev-btn { grid-column: 1; }
+.month-nav h1 { grid-column: 2; }
+.month-nav #next-btn { grid-column: 3; }
 
 .topbar-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
