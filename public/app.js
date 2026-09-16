@@ -103,6 +103,7 @@ function hydrate(payload) {
     fetchedAt: payload.fetchedAt,
     source: payload.source,
     stale: payload.stale,
+    hasSession: Boolean(payload.hasSession),
     error: payload.error,
   };
 }
@@ -735,10 +736,11 @@ function finishSync(message, { reload = false } = {}) {
   sync.status.textContent = message;
   sync.startBtn.disabled = false;
   if (reload) {
-    setTimeout(() => {
+    setTimeout(async () => {
       sync.modal.hidden = true;
-      load({ force: true });
-    }, 1200);
+      await load({ force: true });
+      updateModalFields();
+    }, 1500);
   }
 }
 
@@ -746,16 +748,24 @@ function applySyncState(st) {
   switch (st.status) {
     case 'downloading':
     case 'starting':
+      sync.status.className = 'sync-status';
       sync.status.textContent = st.detail || 'Synchronisation avec Edusign en cours\u2026';
       break;
     case 'success':
+      if (state.meta) state.meta.hasSession = true;
+      if (sync.sessionBadge) {
+        sync.sessionBadge.className = 'session-badge active';
+        sync.sessionBadge.textContent = '\uD83D\uDFE2 Session active (1 clic pr\u00EAt)';
+      }
+      sync.status.className = 'sync-status success';
       finishSync('Termin\u00E9 ! ' + (st.detail || 'Le planning est \u00E0 jour.'), { reload: true });
       break;
     case 'error':
       if (sync.sessionBadge) {
         sync.sessionBadge.className = 'session-badge expired';
-        sync.sessionBadge.textContent = '\uD83D\uDFE0 Session expir\u00E9e';
+        sync.sessionBadge.textContent = '\uD83D\uDFE0 Session \u00E0 renouveler';
       }
+      sync.status.className = 'sync-status error';
       if (sync.password.hidden) {
         sync.password.hidden = false;
         sync.togglePwdBtn.hidden = true;
