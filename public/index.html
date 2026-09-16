@@ -48,17 +48,15 @@
   <!-- Modal de synchronisation -->
   <div id="sync-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="sync-title" hidden>
     <div class="modal-content">
-      <h2 id="sync-title">Mettre à jour via Microsoft</h2>
-      <p class="modal-hint">Le serveur en arrière-plan va se connecter pour aspirer ton année.</p>
+      <h2 id="sync-title">Synchroniser avec Edusign</h2>
+      <p class="modal-hint">Connexion directe et instantanée à l'API Edusign (sans A2F).</p>
 
       <input type="email" id="sync-email" autocomplete="username" placeholder="Email de l'école">
-      <input type="password" id="sync-password" autocomplete="current-password" placeholder="Mot de passe">
+      <input type="password" id="sync-password" autocomplete="current-password" placeholder="Mot de passe Edusign">
 
-      <button id="sync-start-btn" class="btn-primary" type="button">Lancer la récupération</button>
+      <button id="sync-start-btn" class="btn-primary" type="button">Synchroniser maintenant</button>
 
       <div id="sync-status" class="sync-status" role="status" aria-live="polite"></div>
-      <div id="sync-a2f" class="sync-a2f" hidden></div>
-      <img id="sync-screenshot" class="sync-screenshot" alt="Ce que voit le robot" hidden>
 
       <button id="sync-close-btn" class="btn-ghost sync-close" type="button">Fermer</button>
     </div>

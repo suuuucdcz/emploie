@@ -589,9 +589,10 @@ function renderStatus() {
     }
   }
   parts.push(`${state.events.length} cours`);
+  parts.push('Edusign');
 
   el.status.textContent = parts.join(' \u00B7 ');
-  el.status.className = state.meta.stale ? 'warn' : '';
+  el.status.className = state.meta.stale ? 'warn' : 'ok';
   if (state.meta.stale) {
     el.status.textContent += ' \u00B7 donn\u00E9es en cache';
   }
@@ -663,24 +664,20 @@ document.addEventListener('visibilitychange', () => {
 
 /* ------------------------------------------------------------ sync robot */
 
-const POLL_MS = 2000;
+const POLL_MS = 600;
 
 const sync = {
   modal: document.getElementById('sync-modal'),
   startBtn: document.getElementById('sync-start-btn'),
   closeBtn: document.getElementById('sync-close-btn'),
   status: document.getElementById('sync-status'),
-  a2f: document.getElementById('sync-a2f'),
   email: document.getElementById('sync-email'),
   password: document.getElementById('sync-password'),
-  shot: document.getElementById('sync-screenshot'),
 };
 
-// Seul l'email est memorise : un mot de passe dans localStorage serait lisible
-// par n'importe quel script de la page.
 sync.email.value = getUserEmail();
 
-let syncDismissed = false;   // l'utilisateur a ferme la modal, on la laisse fermee
+let syncDismissed = false;
 let syncTimer = null;
 let syncId = null;
 
@@ -700,55 +697,35 @@ function stopPolling() {
   syncTimer = null;
 }
 
-function showScreenshot(dataUri) {
-  sync.shot.hidden = !dataUri;
-  if (dataUri) sync.shot.src = dataUri;
-}
-
-function showA2fCode(code) {
-  sync.a2f.hidden = !code;
-  if (code) sync.a2f.textContent = code;
-}
-
 function finishSync(message, { reload = false } = {}) {
   stopPolling();
-  showA2fCode(null);
   sync.status.textContent = message;
   sync.startBtn.disabled = false;
-  // Relire l'agenda suffit : recharger toute la page reinitialiserait le jour
-  // affiche et ferait reclignoter l'interface.
   if (reload) {
     setTimeout(() => {
       sync.modal.hidden = true;
       load({ force: true });
-    }, 1500);
+    }, 1200);
   }
 }
 
 function applySyncState(st) {
-  showScreenshot(st.screenshot);
-
   switch (st.status) {
-    case 'waiting_2fa':
-      sync.status.textContent = st.detail || 'Tapez ce num\u00E9ro sur votre t\u00E9l\u00E9phone :';
-      showA2fCode(st.code);
-      break;
     case 'downloading':
-      sync.status.textContent = st.detail || 'T\u00E9l\u00E9chargement en cours\u2026';
-      showA2fCode(null);
+    case 'starting':
+      sync.status.textContent = st.detail || 'Synchronisation avec Edusign en cours\u2026';
       break;
     case 'success':
-      showScreenshot(null);
-      finishSync('Termin\u00E9 ! Le planning est \u00E0 jour.', { reload: true });
+      finishSync('Termin\u00E9 ! ' + (st.detail || 'Le planning est \u00E0 jour.'), { reload: true });
       break;
     case 'error':
-      finishSync('Erreur : ' + (st.error_msg || 'inconnue'));
+      finishSync('Erreur : ' + (st.error_msg || 'Identifiants ou connexion impossible'));
       break;
     case 'unknown':
-      finishSync('Synchronisation introuvable, relance-la.');
+      finishSync('Synchronisation introuvable, veuillez r\u00E9essayer.');
       break;
-    default:  // starting, logging_in
-      sync.status.textContent = st.detail || 'Connexion \u00E0 Microsoft en cours\u2026';
+    default:
+      sync.status.textContent = st.detail || 'Synchronisation en cours\u2026';
   }
 }
 
@@ -764,15 +741,13 @@ async function startSync() {
   const email = sync.email.value.trim();
   const password = sync.password.value;
   if (!email || !password) {
-    sync.status.textContent = 'Email et mot de passe requis.';
+    sync.status.textContent = 'Email et mot de passe Edusign requis.';
     return;
   }
 
   localStorage.setItem('auriga_email', email);
-  sync.status.textContent = 'D\u00E9marrage du robot\u2026';
+  sync.status.textContent = 'Connexion \u00E0 Edusign\u2026';
   sync.startBtn.disabled = true;
-  showA2fCode(null);
-  showScreenshot(null);
   stopPolling();
 
   try {
@@ -785,7 +760,7 @@ async function startSync() {
     if (!payload.success) throw new Error(payload.error || 'demarrage impossible');
 
     syncId = payload.syncId;
-    sync.password.value = '';  // ne pas le laisser trainer dans le DOM
+    sync.password.value = '';
     syncTimer = setInterval(pollSync, POLL_MS);
   } catch (err) {
     finishSync('Erreur : ' + err.message);

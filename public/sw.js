@@ -1,7 +1,7 @@
 /* Service worker : coquille applicative en cache, agenda en reseau d'abord. */
 
-const SHELL_CACHE = 'auriga-shell-v8';
-const DATA_CACHE = 'auriga-data-v8';
+const SHELL_CACHE = 'auriga-shell-v9';
+const DATA_CACHE = 'auriga-data-v9';
 
 const OFFLINE_PAYLOAD = JSON.stringify({ events: [], error: 'hors ligne', stale: true });
 
@@ -12,6 +12,9 @@ const SHELL = [
   '/app.js',
   '/manifest.webmanifest',
   '/icons/icon.svg',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+  '/icons/icon-maskable-512.png',
 ];
 
 // cache.addAll() est tout-ou-rien : une seule ressource en echec empechait le

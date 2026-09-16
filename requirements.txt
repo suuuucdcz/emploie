@@ -1,1 +1,1 @@
-playwright==1.42.0
+# Aucune dependance externe requise (100% bibliotheque standard Python)

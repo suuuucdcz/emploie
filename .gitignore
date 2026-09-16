@@ -10,6 +10,7 @@ cache/
 planning_capture.json
 session_state.json
 mon_agenda_genere.ics
+edusign_traffic.json
 
 # OS files
 .DS_Store
