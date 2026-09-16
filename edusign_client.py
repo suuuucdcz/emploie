@@ -119,12 +119,17 @@ def fetch_professors(token, device_id, professor_ids):
         "Authorization": f"Bearer {token}",
         "x-device-id": device_id,
     }
-    res = _http_request(
-        f"{API_BASE}/professors",
-        method="POST",
-        data={"ids": list(set(professor_ids))},
-        headers=headers,
-    )
+    try:
+        res = _http_request(
+            f"{API_BASE}/professors",
+            method="POST",
+            data={"ids": list(set(professor_ids))},
+            headers=headers,
+        )
+    except Exception as exc:
+        print(f"[edusign] resolution des professeurs indisponible ({exc}), poursuite sans noms de profs")
+        return {}
+
     result = {}
     for p in res.get("result", []):
         name = f"{p.get('FIRSTNAME', '')} {p.get('LASTNAME', '')}".strip()

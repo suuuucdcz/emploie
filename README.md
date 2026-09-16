@@ -78,15 +78,3 @@ create table if not exists schedules (
 | `ics.py` | Analyseur RFC 5545 autonome : événements, récurrences RRULE, détection CM/TD/TP |
 | `public/` | Interface PWA progressive (`index.html`, `app.js`, `styles.css`, `sw.js`) |
 | `update_planning.py` | Outil CLI pour synchroniser manuellement son planning |
-
----
-
-## Tests unitaires
-
-Pour lancer l'ensemble des suites de tests automatisés :
-
-```bash
-python test_edusign.py
-python test_ics.py
-python test_ics_builder.py
-```

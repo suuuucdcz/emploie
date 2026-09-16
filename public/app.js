@@ -815,6 +815,20 @@ if (sync.togglePwdBtn) {
   });
 }
 
+sync.email.addEventListener('input', () => {
+  const currentEmail = sync.email.value.trim().toLowerCase();
+  const savedEmail = getUserEmail().toLowerCase();
+  if (currentEmail && currentEmail !== savedEmail) {
+    sync.password.hidden = false;
+    sync.togglePwdBtn.hidden = true;
+    if (sync.logoutBtn) sync.logoutBtn.hidden = true;
+    sync.startBtn.textContent = 'Synchroniser maintenant';
+    if (sync.hint) sync.hint.textContent = 'Connexion directe et instantan\u00E9e \u00E0 l\'API Edusign (sans A2F).';
+  } else {
+    updateModalFields();
+  }
+});
+
 if (sync.logoutBtn) {
   sync.logoutBtn.addEventListener('click', async () => {
     const email = sync.email.value.trim();
@@ -829,10 +843,15 @@ if (sync.logoutBtn) {
     }
     localStorage.removeItem('auriga_email');
     localStorage.removeItem(CACHE_KEY);
-    if (state.meta) state.meta.hasSession = false;
+    state.events = [];
+    if (state.meta) {
+      state.meta.hasSession = false;
+      state.meta.error = 'Veuillez vous connecter.';
+    }
     sync.password.value = '';
     updateModalFields();
     sync.status.textContent = 'Session oubli\u00E9e. Vous \u00EAtes d\u00E9connect\u00E9.';
+    render();
   });
 }
 
