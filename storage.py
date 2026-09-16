@@ -114,10 +114,3 @@ def save_schedule(email, ics_content):
         handle.write(ics_content)
     return "cache local"
 
-
-def cached_mtime(email):
-    """Date de derniere ecriture du cache disque, ou None."""
-    try:
-        return os.path.getmtime(cache_path(email))
-    except (OSError, ValueError):
-        return None

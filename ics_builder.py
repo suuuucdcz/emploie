@@ -245,7 +245,3 @@ def build_ics(events, now=None):
 
     return "\r\n".join(fold(line) for line in lines) + "\r\n"
 
-
-def build_ics_from_payloads(payloads, now=None):
-    """Raccourci : reponses brutes de l'API -> texte ICS."""
-    return build_ics(extract_events(payloads), now=now)
