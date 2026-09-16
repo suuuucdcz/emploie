@@ -59,6 +59,10 @@ def session_path(email):
     return os.path.join(CACHE_DIR, "%s.session.json" % cache_key(email))
 
 
+def absences_path(email):
+    return os.path.join(CACHE_DIR, "%s.absences.json" % cache_key(email))
+
+
 def _atomic_write(target_path, data, mode="w", encoding="utf-8", secure_permissions=False):
     """Ecriture atomique via un fichier temporaire pour eviter toute corruption."""
     os.makedirs(os.path.dirname(target_path), exist_ok=True)
@@ -252,3 +256,26 @@ def clear_session(email):
                 pass
     except Exception as exc:
         print("[storage] erreur suppression session : %s" % exc)
+
+
+def save_absences(email, data):
+    """Enregistre les statistiques et le bilan d'absences en cache."""
+    try:
+        clean_email = validate_and_normalize_email(email)
+        raw = json.dumps(data, ensure_ascii=False)
+        _atomic_write(absences_path(clean_email), raw, secure_permissions=False)
+    except Exception as exc:
+        print("[storage] erreur sauvegarde absences : %s" % exc)
+
+
+def load_absences(email):
+    """Charge le bilan d'absences depuis le cache, ou None."""
+    try:
+        clean_email = validate_and_normalize_email(email)
+        path = absences_path(clean_email)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+    except Exception:
+        pass
+    return None

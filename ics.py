@@ -236,6 +236,12 @@ def parse(text):
                     current["exdates"].add(
                         parsed.date() if isinstance(parsed, datetime) else parsed
                     )
+            elif name == "X-EDUSIGN-ATTENDANCE":
+                current["attendance"] = value.strip().lower()
+            elif name == "X-EDUSIGN-CAN-SIGN":
+                current["can_sign"] = (value.strip().upper() == "TRUE")
+            elif name == "X-EDUSIGN-JUSTIFIED":
+                current["is_justified"] = (value.strip().upper() == "TRUE")
         except (ValueError, KeyError):
             # une propriete illisible ne doit pas faire sauter tout l'agenda
             continue
@@ -278,6 +284,9 @@ def _finalize(raw):
     kind = _guess_kind(summary, description, raw.get("categories", ""))
     teacher = _guess_teacher(description)
     base_uid = raw.get("uid", "evt")
+    attendance = raw.get("attendance")
+    can_sign = raw.get("can_sign", False)
+    is_justified = raw.get("is_justified", False)
 
     return [
         {
@@ -291,6 +300,9 @@ def _finalize(raw):
             "description": description,
             "teacher": teacher,
             "kind": kind,
+            "attendance": attendance,
+            "canSign": can_sign,
+            "isJustified": is_justified,
         }
         for index, (occ_start, occ_end) in enumerate(pairs)
     ]

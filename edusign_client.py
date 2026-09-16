@@ -158,6 +158,19 @@ def edusign_to_events(courses, professors):
         if c.get("DESCRIPTION"):
             description_parts.append(c["DESCRIPTION"].strip())
 
+        presence_raw = c.get("STUDENT_PRESENCE")
+        can_sign = bool(c.get("STUDENT_CAN_SIGN") or c.get("isWaitingSign"))
+        is_justified = bool(c.get("STUDENT_IS_JUSTIFICATED") or c.get("STUDENT_ABSENCE_ID") or c.get("justifiedAbsence"))
+
+        if presence_raw in (1, True, "1"):
+            attendance = "present"
+        elif can_sign:
+            attendance = "waiting"
+        elif c.get("isAbsent") or c.get("STUDENT_ABSENCE") or (presence_raw in (0, False, "0") and not can_sign):
+            attendance = "absent"
+        else:
+            attendance = None
+
         events.append({
             "uid": f"{cid}@edusign",
             "start": start,
@@ -165,8 +178,31 @@ def edusign_to_events(courses, professors):
             "summary": name,
             "description": "\n".join(description_parts),
             "location": (c.get("CLASSROOM") or "").strip(),
+            "attendance": attendance,
+            "can_sign": can_sign,
+            "is_justified": is_justified,
         })
     return events
+
+
+def fetch_absence_statistics(token, device_id, start_iso, end_iso):
+    """Interroge /absences/statistics sur l'API apprenant Edusign."""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "x-device-id": device_id,
+    }
+    try:
+        res = _http_request(
+            f"{API_BASE}/absences/statistics",
+            method="POST",
+            data={"start": start_iso, "end": end_iso, "trainingId": None},
+            headers=headers,
+            timeout=15,
+        )
+        return res.get("result") or res
+    except Exception as exc:
+        print(f"[edusign] statistiques d'absences API indisponibles ({exc})")
+        return None
 
 
 def default_academic_dates():
@@ -228,6 +264,11 @@ def sync_schedule(email, password=None, refresh_token=None, device_id=None):
     destination = storage.save_schedule(
         email, ics_text, refresh_token=new_refresh_token, device_id=device_id
     )
+
+    # Sauvegarde optionnelle des statistiques d'assiduite
+    absences_stats = fetch_absence_statistics(token, device_id, start_iso, end_iso)
+    if absences_stats:
+        storage.save_absences(email, absences_stats)
 
     return {
         "success": True,

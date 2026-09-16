@@ -192,6 +192,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/schedule":
             self._serve_schedule(query.get("email"), force="refresh" in query)
+        elif parsed.path == "/api/absences":
+            self._serve_absences(query.get("email"))
         elif parsed.path == "/api/health":
             self._send_json(200, {"ok": True})
         elif parsed.path == "/api/sync/status":
@@ -267,6 +269,69 @@ class Handler(BaseHTTPRequestHandler):
             })
         except Exception as exc:
             self._send_json(502, {"events": [], "error": str(exc)})
+
+    def _serve_absences(self, email):
+        if not email:
+            self._send_json(400, {"success": False, "error": "Email requis"})
+            return
+        try:
+            clean_email = storage.validate_and_normalize_email(email)
+        except ValueError as exc:
+            self._send_json(400, {"success": False, "error": str(exc)})
+            return
+
+        # 1. Tenter de charger le cache officiel sauvegarde
+        cached = storage.load_absences(clean_email)
+
+        # 2. Obtenir les cours pour calculer / enrichir les statistiques
+        try:
+            snapshot = get_schedule(self.config, clean_email)
+            events = snapshot.get("events", [])
+        except Exception:
+            events = []
+
+        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        past_events = [e for e in events if e.get("end", "") <= now_iso]
+
+        presences = sum(1 for e in past_events if e.get("attendance") == "present")
+        absences_list = [
+            e for e in past_events
+            if e.get("attendance") == "absent" or (e.get("attendance") != "present" and not e.get("canSign"))
+        ]
+        total_past = len(past_events)
+        computed_ratio = round((presences / total_past * 100), 1) if total_past > 0 else 100.0
+
+        stats = {
+            "totalCourses": total_past,
+            "presences": presences,
+            "presenceRatio": computed_ratio,
+            "absences": len(absences_list),
+            "justified": sum(1 for e in absences_list if e.get("isJustified")),
+            "delays": 0,
+            "pending": 0,
+            "absencesList": [
+                {
+                    "title": e.get("title") or e.get("rawTitle"),
+                    "start": e.get("start"),
+                    "end": e.get("end"),
+                    "location": e.get("location"),
+                    "isJustified": e.get("isJustified", False),
+                }
+                for e in absences_list
+            ],
+        }
+
+        # Fusion si l'API Edusign a renvoye des donnees directes
+        if isinstance(cached, dict):
+            c_stats = cached.get("statistics") if isinstance(cached.get("statistics"), dict) else cached
+            if isinstance(c_stats, dict):
+                for k in ("totalCourses", "presences", "presenceRatio", "absences", "justified", "delays", "pending"):
+                    if c_stats.get(k) is not None:
+                        stats[k] = c_stats[k]
+            if "absences" in cached and isinstance(cached["absences"], list):
+                stats["absencesList"] = cached["absences"]
+
+        self._send_json(200, {"success": True, "statistics": stats})
 
     def _serve_static(self, path):
         rel = "index.html" if path == "/" else urllib.parse.unquote(path).lstrip("/")

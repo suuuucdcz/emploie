@@ -12,21 +12,28 @@ const state = {
   events: [],
   selected: startOfDay(new Date()),
   view: 'day',
+  activeTab: 'planning',
   meta: null,
   loading: false,
   liveSignature: '',
+  absences: null,
+  absencesLoading: false,
 };
 
 const el = {
   month: document.getElementById('month-label'),
   strip: document.getElementById('weekstrip'),
   content: document.getElementById('content'),
-  status: document.getElementById('status-text'),
-  today: document.getElementById('today'),
+  todayBtn: document.getElementById('today-btn'),
   refresh: document.getElementById('refresh'),
   viewToggle: document.getElementById('view-toggle'),
   prevBtn: document.getElementById('prev-btn'),
   nextBtn: document.getElementById('next-btn'),
+  tabbar: document.getElementById('tabbar'),
+  tabPlanning: document.getElementById('tab-btn-planning'),
+  tabAssiduite: document.getElementById('tab-btn-assiduite'),
+  tabParametres: document.getElementById('tab-btn-parametres'),
+  settingsDot: document.getElementById('settings-dot'),
 };
 
 /* ------------------------------------------------------------- utilitaires */
@@ -86,6 +93,23 @@ function escapeHtml(value) {
 
 function getUserEmail() {
   return localStorage.getItem('auriga_email') || '';
+}
+
+function attendanceBadge(evt, now = new Date()) {
+  const isPast = evt._end <= now;
+  if (evt.attendance === 'present') {
+    return '<span class="badge badge-present">✓ Émargé</span>';
+  }
+  if (evt.canSign) {
+    return '<span class="badge badge-sign">✍️ À émarger</span>';
+  }
+  if (evt.isJustified) {
+    return '<span class="badge badge-justified">📋 Justifié</span>';
+  }
+  if (evt.attendance === 'absent' || (isPast && evt.attendance !== 'present')) {
+    return '<span class="badge badge-absent">✕ Absent</span>';
+  }
+  return '';
 }
 
 /* ------------------------------------------------------------------ donnees */
@@ -183,12 +207,40 @@ async function load({ force = false } = {}) {
 function render() {
   state.liveSignature = liveSignature(new Date());
   renderHeader();
-  renderStrip();
-  renderContent();
-  renderStatus();
+  updateSettingsDot();
+
+  if (state.activeTab === 'planning') {
+    renderStrip();
+    renderContent();
+  } else if (state.activeTab === 'assiduite') {
+    el.content.innerHTML = '';
+    renderAssiduite();
+  } else if (state.activeTab === 'parametres') {
+    el.content.innerHTML = '';
+    renderParametres();
+  }
+}
+
+function updateSettingsDot() {
+  if (!el.settingsDot) return;
+  if (!state.meta) {
+    el.settingsDot.hidden = true;
+    return;
+  }
+  el.settingsDot.hidden = false;
+  el.settingsDot.className = state.meta.hasSession ? 'settings-dot' : 'settings-dot warn';
 }
 
 function renderHeader() {
+  if (state.activeTab === 'assiduite') {
+    el.month.textContent = 'Assiduité & Absences';
+    return;
+  }
+  if (state.activeTab === 'parametres') {
+    el.month.textContent = 'Paramètres';
+    return;
+  }
+
   const label = state.view === 'week'
     ? `Semaine du ${mondayOf(state.selected).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}`
     : state.selected.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
@@ -400,20 +452,21 @@ function renderWeek() {
 function slot(evt, first, now) {
   const ongoing = evt._start <= now && now < evt._end;
   const past = evt._end <= now;
+  const isSigned = evt.attendance === 'present';
   const top = hourOf(evt._start) - first;
   const height = Math.max(endHourOf(evt) - hourOf(evt._start), 0.42);
 
   const node = document.createElement('button');
   node.type = 'button';
-  node.className = `slot${ongoing ? ' now' : ''}${past ? ' past' : ''}`;
+  node.className = `slot${ongoing ? ' now' : ''}${past ? ' past' : ''}${isSigned ? ' is-signed' : ''}`;
   node.style.setProperty('--kind', `var(--${evt.kind.toLowerCase()})`);
   node.style.top = `calc(${top.toFixed(3)} * var(--hour))`;
   node.style.height = `calc(${height.toFixed(3)} * var(--hour) - 3px)`;
 
-  // Le contenu deborde et se fait rogner : un creneau court montre son type,
-  // un creneau long montre aussi le titre et la salle.
+  const badgeIcon = isSigned ? ' ✓' : (evt.canSign ? ' ✍️' : '');
+
   node.innerHTML = `
-    <span class="slot-kind">${KIND_LABEL[evt.kind] || 'COURS'}</span>
+    <span class="slot-kind">${KIND_LABEL[evt.kind] || 'COURS'}${badgeIcon}</span>
     <span class="slot-title">${escapeHtml(evt.title || evt.rawTitle || 'Cours')}</span>
     ${evt.location ? `<span class="slot-room">${escapeHtml(evt.location)}</span>` : ''}`;
   node.setAttribute('aria-label',
@@ -457,6 +510,7 @@ function card(evt, now = new Date()) {
       <div class="card-badges">
         <span class="badge">${KIND_LABEL[evt.kind] || 'COURS'}</span>
         ${ongoing ? '<span class="badge now-badge">EN COURS</span>' : ''}
+        ${attendanceBadge(evt, now)}
       </div>
       <h2 class="card-title">${escapeHtml(evt.title || evt.rawTitle || 'Cours')}</h2>
       <div class="card-meta">${meta.join('')}</div>
@@ -579,25 +633,279 @@ function tick() {
   updateLive(now);
 }
 
-function renderStatus() {
-  if (!state.meta) { el.status.textContent = '\u2014'; return; }
+/* ------------------------------------------------------------ onglets & navigation */
 
-  const parts = [];
-  if (state.meta.fetchedAt) {
-    const when = new Date(state.meta.fetchedAt);
-    if (!Number.isNaN(when.getTime())) {
-      parts.push(`maj ${when.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`);
+function switchTab(tab) {
+  if (state.activeTab === tab) return;
+  state.activeTab = tab;
+
+  el.tabPlanning.classList.toggle('active', tab === 'planning');
+  el.tabAssiduite.classList.toggle('active', tab === 'assiduite');
+  el.tabParametres.classList.toggle('active', tab === 'parametres');
+
+  const isPlanning = (tab === 'planning');
+  el.strip.hidden = !isPlanning;
+  el.prevBtn.hidden = !isPlanning;
+  el.nextBtn.hidden = !isPlanning;
+  el.viewToggle.hidden = !isPlanning;
+  el.todayBtn.hidden = !isPlanning;
+  el.refresh.hidden = !isPlanning;
+
+  render();
+  window.scrollTo({ top: 0, behavior: 'instant' });
+}
+
+el.tabPlanning.addEventListener('click', () => switchTab('planning'));
+el.tabAssiduite.addEventListener('click', () => switchTab('assiduite'));
+el.tabParametres.addEventListener('click', () => switchTab('parametres'));
+
+/* ------------------------------------------------------------ page assiduite */
+
+async function fetchAbsences({ force = false } = {}) {
+  const email = getUserEmail();
+  if (!email || (state.absences && !force)) return;
+  state.absencesLoading = true;
+  try {
+    const res = await fetch(`/api/absences?email=${encodeURIComponent(email)}`);
+    const data = await res.json();
+    if (data.success && data.statistics) {
+      state.absences = data.statistics;
+    }
+  } catch (err) {
+    console.warn('Impossible de charger les absences:', err);
+  } finally {
+    state.absencesLoading = false;
+    if (state.activeTab === 'assiduite') render();
+  }
+}
+
+function renderAssiduite() {
+  if (!state.absences && !state.absencesLoading) {
+    fetchAbsences();
+  }
+
+  const container = document.createElement('div');
+  container.className = 'assiduite-container';
+
+  if (state.absencesLoading && !state.absences) {
+    container.innerHTML = '<p class="loading">Calcul de votre assiduité en cours…</p>';
+    el.content.appendChild(container);
+    return;
+  }
+
+  const stats = state.absences || {
+    totalCourses: state.events.filter((e) => e._end <= new Date()).length,
+    presences: state.events.filter((e) => e._end <= new Date() && e.attendance === 'present').length,
+    presenceRatio: 100.0,
+    absences: 0,
+    justified: 0,
+    delays: 0,
+    absencesList: [],
+  };
+
+  const ratioVal = typeof stats.presenceRatio === 'number' ? stats.presenceRatio : 100;
+  let verdictClass = 'verdict-good';
+  let verdictText = 'Assiduité exemplaire 🎓';
+  let circleClass = '';
+  if (ratioVal < 85) {
+    verdictClass = 'verdict-danger';
+    verdictText = 'Sous le seuil d\'alerte ⚠️';
+    circleClass = 'danger';
+  } else if (ratioVal < 93) {
+    verdictClass = 'verdict-warning';
+    verdictText = 'Bonne assiduité 👍';
+    circleClass = 'warn';
+  }
+
+  container.innerHTML = `
+    <div class="assiduite-hero">
+      <div class="score-circle ${circleClass}">
+        <div>
+          <span class="score-value">${ratioVal.toFixed(1)}</span><span class="score-pct">%</span>
+        </div>
+      </div>
+      <div class="score-label">Taux global de présence</div>
+      <div class="score-verdict ${verdictClass}">
+        <span>${verdictText}</span>
+      </div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <span class="kpi-title">📚 Total séances</span>
+        <span class="kpi-value">${stats.totalCourses || 0}</span>
+        <span class="kpi-sub">cours passés</span>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-title" style="color: #22c55e;">✅ Présences</span>
+        <span class="kpi-value" style="color: #22c55e;">${stats.presences || 0}</span>
+        <span class="kpi-sub">séances émargées</span>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-title" style="color: #ef4444;">❌ Absences</span>
+        <span class="kpi-value" style="color: #ef4444;">${stats.absences || 0}</span>
+        <span class="kpi-sub">${stats.justified || 0} justifiée(s)</span>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-title" style="color: #f59e0b;">⏳ Retards</span>
+        <span class="kpi-value" style="color: #f59e0b;">${stats.delays || 0}</span>
+        <span class="kpi-sub">retards constatés</span>
+      </div>
+    </div>
+
+    <div class="absences-section">
+      <div class="absences-section-title">
+        <span>Historique des absences</span>
+        <span style="font-size:13px; color:var(--muted); font-weight:500;">${(stats.absencesList || []).length} créneau(x)</span>
+      </div>
+      <div id="absences-list">
+        ${renderAbsencesList(stats.absencesList || [])}
+      </div>
+    </div>
+  `;
+
+  el.content.appendChild(container);
+}
+
+function renderAbsencesList(list) {
+  if (!list.length) {
+    return `
+      <div class="empty-absences">
+        <span style="font-size: 32px; display: block; margin-bottom: 8px;">🎉</span>
+        <strong>Aucune absence enregistrée</strong>
+        <p style="color: var(--muted); font-size: 13px; margin-top: 4px;">Félicitations pour votre assiduité !</p>
+      </div>
+    `;
+  }
+
+  return list.map((item) => {
+    const start = item.start ? new Date(item.start) : (item.startDate ? new Date(item.startDate) : null);
+    const dateStr = start ? start.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' }) + ' à ' + fmtTime(start) : 'Date inconnue';
+    const isJustified = item.isJustified || item.justifiedAbsence;
+    const badgeHtml = isJustified
+      ? '<span class="badge badge-justified">Justifiée</span>'
+      : '<span class="badge badge-absent">Injustifiée</span>';
+
+    return `
+      <div class="absence-item">
+        <div class="absence-info">
+          <span class="absence-course">${escapeHtml(item.title || item.courseName || 'Cours')}</span>
+          <span class="absence-date">${dateStr}${item.location ? ' · ' + escapeHtml(item.location) : ''}</span>
+        </div>
+        ${badgeHtml}
+      </div>
+    `;
+  }).join('');
+}
+
+/* ------------------------------------------------------------ page parametres */
+
+function renderParametres() {
+  const container = document.createElement('div');
+  container.className = 'settings-container';
+
+  const email = getUserEmail();
+  const hasSession = Boolean(state.meta && state.meta.hasSession);
+  let fetchedLabel = '—';
+  if (state.meta && state.meta.fetchedAt) {
+    const dt = new Date(state.meta.fetchedAt);
+    if (!Number.isNaN(dt.getTime())) {
+      fetchedLabel = dt.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
     }
   }
-  parts.push(`${state.events.length} cours`);
 
-  const hasSession = Boolean(state.meta.hasSession);
-  parts.push(hasSession ? '\uD83D\uDFE2 Session active' : '\uD83D\uDFE0 Session \u00E0 renouveler');
+  container.innerHTML = `
+    <div class="settings-group">
+      <span class="settings-group-title">Session Edusign</span>
+      <div class="session-card-status ${hasSession ? '' : 'warn'}">
+        <span style="font-size: 18px;">${hasSession ? '🟢' : '🟠'}</span>
+        <div>
+          <div style="font-weight: 700;">${hasSession ? 'Session active (Option B)' : 'Session à renouveler'}</div>
+          <div style="font-size: 12px; opacity: 0.85; margin-top: 2px;">
+            ${hasSession ? 'Renouvellement 1-clic silencieux disponible.' : 'Mot de passe requis pour renouveler la session.'}
+          </div>
+        </div>
+      </div>
+    </div>
 
-  el.status.textContent = parts.join(' \u00B7 ');
-  el.status.className = state.meta.stale ? 'warn' : 'ok';
-  if (state.meta.stale) {
-    el.status.textContent += ' \u00B7 donn\u00E9es en cache';
+    <div class="settings-group">
+      <span class="settings-group-title">Synchronisation & Données</span>
+      <div class="settings-row">
+        <span class="settings-label">Compte étudiant</span>
+        <span class="settings-val">${escapeHtml(email || 'Non connecté')}</span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Dernière mise à jour</span>
+        <span class="settings-val">${fetchedLabel}</span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Volume de cours</span>
+        <span class="settings-val">${state.events.length} cours chargés</span>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Statut du cache</span>
+        <span class="settings-val">${state.meta && state.meta.stale ? '⚠️ Données en cache' : '✅ En direct'}</span>
+      </div>
+    </div>
+
+    <div class="settings-group">
+      <span class="settings-group-title">Actions</span>
+      <button id="settings-sync-now" class="settings-btn-primary" type="button">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M17.4 18.3a4.3 4.3 0 0 0 .4-8.56A6 6 0 0 0 6.2 8.9a4 4 0 0 0 .5 9.4"/>
+          <path d="M12 11.5v7.5"/>
+          <polyline points="9.2 16.2 12 19 14.8 16.2"/>
+        </svg>
+        <span>Mettre à jour maintenant</span>
+      </button>
+
+      <button id="settings-change-pwd" class="btn-ghost" style="padding: 10px; font-weight: 600; font-size: 14px;" type="button">
+        Changer de mot de passe / Réinitialiser
+      </button>
+
+      <button id="settings-logout" class="settings-btn-danger" type="button">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+          <polyline points="16 17 21 12 16 7"></polyline>
+          <line x1="21" y1="12" x2="9" y2="12"></line>
+        </svg>
+        <span>Oublier la session (Déconnexion)</span>
+      </button>
+    </div>
+  `;
+
+  el.content.appendChild(container);
+
+  const syncNowBtn = document.getElementById('settings-sync-now');
+  if (syncNowBtn) {
+    syncNowBtn.addEventListener('click', () => {
+      if (hasSession) {
+        triggerPullToRefresh();
+      } else {
+        openSyncModal({ force: true });
+      }
+    });
+  }
+
+  const changePwdBtn = document.getElementById('settings-change-pwd');
+  if (changePwdBtn) {
+    changePwdBtn.addEventListener('click', () => {
+      openSyncModal({ force: true, showPassword: true });
+    });
+  }
+
+  const logoutBtn = document.getElementById('settings-logout');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', async () => {
+      if (!confirm('Voulez-vous vraiment oublier la session sur cet appareil ?')) return;
+      await fetch('/api/session/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      if (state.meta) state.meta.hasSession = false;
+      render();
+    });
   }
 }
 
@@ -609,7 +917,7 @@ function step(direction) {
   render();
 }
 
-el.today.addEventListener('click', () => {
+el.todayBtn.addEventListener('click', () => {
   state.selected = startOfDay(new Date());
   render();
 });
@@ -666,7 +974,6 @@ async function triggerPullToRefresh() {
   }
 
   el.refresh.classList.add('spinning');
-  el.status.textContent = 'Actualisation en direct avec Edusign\u2026';
 
   try {
     const res = await fetch('/api/sync/start', {

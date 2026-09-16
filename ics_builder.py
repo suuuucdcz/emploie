@@ -100,7 +100,7 @@ def build_ics(events, now=None):
             print("[ics_builder] evenement ignore (%s)" % exc)
             continue
 
-        lines.extend([
+        vevent_lines = [
             "BEGIN:VEVENT",
             "UID:%s" % escape_text(evt["uid"]),
             "DTSTAMP:%s" % stamp,
@@ -109,8 +109,15 @@ def build_ics(events, now=None):
             "SUMMARY:%s" % escape_text(evt.get("summary")),
             "DESCRIPTION:%s" % escape_text(evt.get("description")),
             "LOCATION:%s" % escape_text(evt.get("location")),
-            "END:VEVENT",
-        ])
+        ]
+        if evt.get("attendance"):
+            vevent_lines.append("X-EDUSIGN-ATTENDANCE:%s" % escape_text(evt["attendance"]))
+        if evt.get("can_sign") is not None:
+            vevent_lines.append("X-EDUSIGN-CAN-SIGN:%s" % ("TRUE" if evt["can_sign"] else "FALSE"))
+        if evt.get("is_justified") is not None:
+            vevent_lines.append("X-EDUSIGN-JUSTIFIED:%s" % ("TRUE" if evt["is_justified"] else "FALSE"))
+        vevent_lines.append("END:VEVENT")
+        lines.extend(vevent_lines)
     lines.append("END:VCALENDAR")
 
     return "\r\n".join(fold(line) for line in lines) + "\r\n"
