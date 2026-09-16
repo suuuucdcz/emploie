@@ -1,24 +1,26 @@
-"""Stockage des agendas : Supabase si configure, sinon cache disque.
+"""Stockage des agendas et sessions Edusign : Supabase si configure, sinon cache local.
 
-Un seul endroit decide ou vit un ICS, comment une adresse email devient un nom
-de fichier, et comment on parle a Supabase. server.py lit, sync_worker.py ecrit.
+Un seul endroit decide ou vivent les fichiers ICS et les jetons de session,
+comment une adresse email est validee et normalisee, et comment on communique avec Supabase.
 """
 
 import json
 import os
 import re
+import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 
 import envfile
 
-# Tout passe par ce module pour lire ou ecrire un agenda : c'est donc ici que
-# le .env local doit etre charge, avant la premiere lecture d'os.environ.
+# Chargement du fichier .env local au demarrage (silencieux si absent)
 envfile.load()
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(ROOT, "cache")
 
+_EMAIL_RE = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
 _UNSAFE = re.compile(r"[^a-z0-9._-]+")
 
 
@@ -30,22 +32,62 @@ def supabase_config():
     """(url, key) si Supabase est configure, sinon (None, None)."""
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
-    return (url, key) if url and key else (None, None)
+    return (url.rstrip("/"), key) if url and key else (None, None)
+
+
+def validate_and_normalize_email(email):
+    """Valide et normalise une adresse email (minuscules, sans espaces)."""
+    if not email or not isinstance(email, str):
+        raise ValueError("Adresse email requise.")
+    cleaned = email.strip().lower()
+    if len(cleaned) > 254 or not _EMAIL_RE.match(cleaned):
+        raise ValueError("Format d'adresse email invalide.")
+    return cleaned
 
 
 def cache_key(email):
     """Adresse email -> identifiant de fichier sur, sans separateur de chemin."""
-    if not email or "@" not in email:
-        raise ValueError("Adresse email invalide")
-    return _UNSAFE.sub("_", email.strip().lower())
+    cleaned = validate_and_normalize_email(email)
+    return _UNSAFE.sub("_", cleaned)
 
 
 def cache_path(email):
     return os.path.join(CACHE_DIR, "%s.ics" % cache_key(email))
 
 
+def session_path(email):
+    return os.path.join(CACHE_DIR, "%s.session.json" % cache_key(email))
+
+
+def _atomic_write(target_path, data, mode="w", encoding="utf-8", secure_permissions=False):
+    """Ecriture atomique via un fichier temporaire pour eviter toute corruption."""
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    dir_name = os.path.dirname(target_path)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, prefix=".tmp_")
+    try:
+        with open(fd, mode, encoding=encoding) as handle:
+            handle.write(data)
+        if secure_permissions and hasattr(os, "chmod"):
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+        os.replace(tmp_path, target_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
 def _supabase_headers(key, write=False):
-    headers = {"apikey": key, "Authorization": "Bearer %s" % key}
+    headers = {
+        "apikey": key,
+        "Authorization": "Bearer %s" % key,
+        "Accept": "application/json",
+    }
     if write:
         headers["Content-Type"] = "application/json"
         headers["Prefer"] = "resolution=merge-duplicates"
@@ -64,53 +106,149 @@ def _supabase_load(url, key, email):
     return rows[0]["ics_content"] if rows else None
 
 
-def _supabase_save(url, key, email, ics_content):
-    body = json.dumps({"email": email, "ics_content": ics_content}).encode("utf-8")
+def _supabase_save(url, key, email, ics_content, refresh_token=None, device_id=None):
+    payload = {"email": email, "ics_content": ics_content}
+    if refresh_token and device_id:
+        payload["refresh_token"] = refresh_token
+        payload["device_id"] = device_id
+
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request("%s/rest/v1/schedules" % url, data=body,
                                  headers=_supabase_headers(key, write=True),
                                  method="POST")
-    with urllib.request.urlopen(req, timeout=30):
-        pass
+    try:
+        with urllib.request.urlopen(req, timeout=30):
+            pass
+    except urllib.error.HTTPError as exc:
+        # Si les colonnes refresh_token/device_id n'existent pas encore dans Supabase
+        if payload.get("refresh_token") and exc.code in (400, 404):
+            fallback_body = json.dumps({"email": email, "ics_content": ics_content}).encode("utf-8")
+            fallback_req = urllib.request.Request("%s/rest/v1/schedules" % url, data=fallback_body,
+                                                 headers=_supabase_headers(key, write=True),
+                                                 method="POST")
+            with urllib.request.urlopen(fallback_req, timeout=30):
+                pass
+        else:
+            raise
 
 
 def load_schedule(email):
     """Renvoie (texte_ics, description_de_la_source).
-
-    Leve NoScheduleError si l'utilisateur n'a jamais synchronise.
+    
+    Leve NoScheduleError si l'agenda n'a jamais ete synchronise.
     """
-    key = cache_key(email)  # valide l'email avant tout appel reseau
+    clean_email = validate_and_normalize_email(email)
 
     url, api_key = supabase_config()
     if url:
         try:
-            content = _supabase_load(url, api_key, email)
+            content = _supabase_load(url, api_key, clean_email)
             if content:
                 return content, "base de donnees Supabase"
         except Exception as exc:
             print("[storage] lecture Supabase impossible (%s), repli local" % exc)
 
-    path = cache_path(email)
+    path = cache_path(clean_email)
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            return handle.read(), "cache local (%s)" % key
+            return handle.read(), "cache local"
 
     raise NoScheduleError("Aucun agenda pour cet utilisateur. Veuillez synchroniser.")
 
 
-def save_schedule(email, ics_content):
-    """Enregistre l'ICS. Renvoie la description de la destination utilisee."""
-    cache_key(email)
+def save_schedule(email, ics_content, refresh_token=None, device_id=None):
+    """Enregistre l'agenda et optionnellement les jetons de session (Option B)."""
+    clean_email = validate_and_normalize_email(email)
+
+    # Sauvegarde locale atomique de secours
+    _atomic_write(cache_path(clean_email), ics_content)
+
+    if refresh_token and device_id:
+        try:
+            session_data = json.dumps({"refresh_token": refresh_token, "device_id": device_id})
+            _atomic_write(session_path(clean_email), session_data, secure_permissions=True)
+        except Exception as exc:
+            print("[storage] erreur ecriture session locale : %s" % exc)
 
     url, api_key = supabase_config()
     if url:
         try:
-            _supabase_save(url, api_key, email, ics_content)
+            _supabase_save(url, api_key, clean_email, ics_content, refresh_token, device_id)
             return "Supabase"
         except Exception as exc:
             print("[storage] ecriture Supabase impossible (%s), repli local" % exc)
 
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    with open(cache_path(email), "w", encoding="utf-8", newline="") as handle:
-        handle.write(ics_content)
     return "cache local"
 
+
+def get_session(email):
+    """Recupere (refresh_token, device_id) si une session existe pour cet utilisateur."""
+    try:
+        clean_email = validate_and_normalize_email(email)
+    except ValueError:
+        return None, None
+
+    url, api_key = supabase_config()
+    if url:
+        try:
+            query = urllib.parse.urlencode({
+                "email": "eq.%s" % clean_email,
+                "select": "refresh_token,device_id",
+            })
+            req = urllib.request.Request("%s/rest/v1/schedules?%s" % (url, query),
+                                         headers=_supabase_headers(api_key))
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                rows = json.loads(resp.read().decode("utf-8"))
+                if rows:
+                    rt = rows[0].get("refresh_token")
+                    did = rows[0].get("device_id")
+                    if rt and did:
+                        return rt, did
+        except Exception:
+            # Colonnes pas encore creees ou erreur reseau : repli local
+            pass
+
+    path = session_path(clean_email)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+                rt = data.get("refresh_token")
+                did = data.get("device_id")
+                if rt and did:
+                    return rt, did
+        except Exception:
+            pass
+
+    return None, None
+
+
+def has_session(email):
+    """Vrai si une session est memorisee pour cet email."""
+    try:
+        rt, did = get_session(email)
+        return bool(rt and did)
+    except Exception:
+        return False
+
+
+def clear_session(email):
+    """Supprime la session memorisee (deconnexion)."""
+    try:
+        clean_email = validate_and_normalize_email(email)
+        path = session_path(clean_email)
+        if os.path.exists(path):
+            os.remove(path)
+
+        url, api_key = supabase_config()
+        if url:
+            body = json.dumps({"refresh_token": None, "device_id": None}).encode("utf-8")
+            query = urllib.parse.urlencode({"email": "eq.%s" % clean_email})
+            req = urllib.request.Request("%s/rest/v1/schedules?%s" % (url, query),
+                                         data=body,
+                                         headers=_supabase_headers(api_key, write=True),
+                                         method="PATCH")
+            with urllib.request.urlopen(req, timeout=15):
+                pass
+    except Exception as exc:
+        print("[storage] erreur suppression session : %s" % exc)

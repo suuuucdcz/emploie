@@ -31,7 +31,7 @@
         <!-- Ce bouton ne recharge pas : il relance la synchronisation Auriga.
              D'ou le nuage, et non des fleches circulaires. -->
         <button id="refresh" class="btn-ghost" type="button"
-                title="Synchroniser avec Auriga" aria-label="Synchroniser avec Auriga">
+                title="Synchroniser avec Edusign" aria-label="Synchroniser avec Edusign">
           <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M17.4 18.3a4.3 4.3 0 0 0 .4-8.56A6 6 0 0 0 6.2 8.9a4 4 0 0 0 .5 9.4"/>
@@ -49,12 +49,14 @@
   <div id="sync-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="sync-title" hidden>
     <div class="modal-content">
       <h2 id="sync-title">Synchroniser avec Edusign</h2>
-      <p class="modal-hint">Connexion directe et instantanée à l'API Edusign (sans A2F).</p>
+      <p id="sync-hint" class="modal-hint">Connexion directe et instantanée à l'API Edusign (sans A2F).</p>
 
       <input type="email" id="sync-email" autocomplete="username" placeholder="Email de l'école">
       <input type="password" id="sync-password" autocomplete="current-password" placeholder="Mot de passe Edusign">
 
-      <button id="sync-start-btn" class="btn-primary" type="button">Synchroniser maintenant</button>
+      <button id="sync-start-btn" class="btn-primary" type="button">Mettre à jour</button>
+      <button id="sync-toggle-pwd" class="btn-ghost" type="button" style="font-size: 13px; margin-top: 4px;" hidden>Changer de mot de passe</button>
+      <button id="sync-logout-btn" class="btn-ghost" type="button" style="font-size: 13px; color: #ef4444; margin-top: 4px;" hidden>Oublier la session (déconnexion)</button>
 
       <div id="sync-status" class="sync-status" role="status" aria-live="polite"></div>
 

@@ -3,8 +3,10 @@
 Synchronise directement les cours depuis l'API Edusign :
     python update_planning.py
 
-Les identifiants proviennent de AURIGA_EMAIL et AURIGA_PASSWORD (fichier .env ou
-variables d'environnement). A defaut, ils sont demandes au clavier.
+Les identifiants peuvent provenir des variables EDUSIGN_EMAIL / EDUSIGN_PASSWORD
+ou AURIGA_EMAIL / AURIGA_PASSWORD (fichier .env ou environnement).
+A defaut, ils sont demandes interactivement.
+Si une session est deja active (Option B), le mot de passe est optionnel !
 """
 
 import getpass
@@ -13,6 +15,7 @@ import sys
 import time
 
 import envfile
+import storage
 import sync_worker
 
 POLL_SECONDS = 0.5
@@ -22,8 +25,21 @@ TERMINAL_STATUSES = ("success", "error", "unknown")
 def credentials():
     """(email, mot de passe), depuis l'environnement ou saisis au clavier."""
     envfile.load()
-    email = os.environ.get("AURIGA_EMAIL") or input("Email de l'ecole : ").strip()
-    password = os.environ.get("AURIGA_PASSWORD") or getpass.getpass("Mot de passe Edusign : ")
+    email = (
+        os.environ.get("EDUSIGN_EMAIL")
+        or os.environ.get("AURIGA_EMAIL")
+        or input("Email de l'ecole : ").strip()
+    )
+    email = storage.validate_and_normalize_email(email)
+
+    password = os.environ.get("EDUSIGN_PASSWORD") or os.environ.get("AURIGA_PASSWORD")
+    if not password:
+        if storage.has_session(email):
+            pwd = getpass.getpass("Mot de passe Edusign (laisser vide pour actualiser via la session) : ")
+            password = pwd if pwd else None
+        else:
+            password = getpass.getpass("Mot de passe Edusign : ")
+
     return email, password
 
 
@@ -32,8 +48,8 @@ def main():
     print("MISE A JOUR DE L'EMPLOI DU TEMPS VIA EDUSIGN")
     print("=" * 55)
 
-    email, password = credentials()
     try:
+        email, password = credentials()
         sync_id = sync_worker.start_sync(email, password)
     except (ValueError, sync_worker.SyncBusy) as exc:
         print("Impossible de demarrer : %s" % exc)

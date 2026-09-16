@@ -6,6 +6,8 @@ __pycache__/
 *.pyc
 
 cache/
+*.session.json
+edusign_traffic.json
 planning_capture.json
 session_state.json
 mon_agenda_genere.ics

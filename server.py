@@ -1,9 +1,9 @@
-"""Serveur de l'emploi du temps Auriga.
+"""Serveur de l'emploi du temps Auriga / Edusign.
 
 Trois roles :
-  1. servir la PWA (dossier public/) ;
-  2. exposer /api/schedule : l'agenda enregistre, converti en JSON ;
-  3. piloter la synchronisation Playwright via /api/sync/*.
+  1. Servir la PWA securisee (dossier public/) ;
+  2. Exposer /api/schedule : l'agenda enregistre, converti en JSON ;
+  3. Piloter la synchronisation Edusign et les sessions via /api/sync/* et /api/session/*.
 
 Lancement : `python server.py` (port 8787 par defaut, ou $PORT).
 """
@@ -32,16 +32,17 @@ DEFAULTS = {
     "refresh_seconds": 900,
 }
 
-# Corps JSON accepte sur /api/sync/start : de quoi tenir un email et un mot de
-# passe, rien de plus.
+# Garde-fous requetes et memoire
 MAX_BODY_BYTES = 4096
-
-# Un utilisateur = une entree de cache. Garde-fou memoire.
 MAX_CACHED_USERS = 100
 
-# mimetypes lit la base de registre sous Windows, ou `.js` est parfois declare
-# en text/plain — ce qui suffit a faire refuser le service worker par le
-# navigateur, et donc a empecher l'installation de la PWA. On tranche ici.
+# Limiteur de requetes pour eviter le flood de synchronisation
+_rate_lock = threading.Lock()
+_rate_limits = {}
+RATE_LIMIT_WINDOW = 60  # secondes
+RATE_LIMIT_MAX = 6      # max tentatives de sync par IP par minute
+
+# Surcharge MIME pour Windows (ou .js est parfois declare en text/plain)
 MIME_OVERRIDES = {
     ".js": "text/javascript",
     ".mjs": "text/javascript",
@@ -52,14 +53,25 @@ MIME_OVERRIDES = {
     ".svg": "image/svg+xml",
 }
 
-# Ressources dont le nom ne change jamais mais le contenu si : il faut
-# revalider a chaque fois. Le 304 qui en resulte ne coute presque rien, et
-# c'est ce qui evite d'avoir a renommer les caches a chaque deploiement.
 ASSET_MAX_AGE = 86400
 REVALIDATE_SUFFIXES = (".html", ".js", ".css", ".webmanifest", ".json")
 
 _registry_lock = threading.Lock()
 _caches = {}
+
+
+def _check_rate_limit(ip):
+    """Verifie que l'IP ne depasse pas le quota de requetes par fenetre."""
+    now = time.time()
+    with _rate_lock:
+        timestamps = _rate_limits.get(ip, [])
+        timestamps = [t for t in timestamps if now - t < RATE_LIMIT_WINDOW]
+        if len(timestamps) >= RATE_LIMIT_MAX:
+            _rate_limits[ip] = timestamps
+            return False
+        timestamps.append(now)
+        _rate_limits[ip] = timestamps
+        return True
 
 
 # --------------------------------------------------------------------------
@@ -76,14 +88,13 @@ def load_config(argv=None):
         except (OSError, ValueError) as exc:
             print("[config] config.json illisible (%s), valeurs par defaut" % exc)
 
-    parser = argparse.ArgumentParser(description="Emploi du temps Auriga")
+    parser = argparse.ArgumentParser(description="Emploi du temps Auriga / Edusign")
     parser.add_argument("--port", type=int, help="Port d'ecoute")
     args = parser.parse_args(argv)
 
     if args.port:
         config["port"] = args.port
 
-    # L'hebergeur a le dernier mot : Render impose le port via $PORT.
     hosted_port = os.environ.get("PORT") or os.environ.get("AURIGA_PORT")
     if hosted_port:
         config["port"] = int(hosted_port)
@@ -92,17 +103,12 @@ def load_config(argv=None):
 
 
 # --------------------------------------------------------------------------
-# Cache des agendas
+# Cache memoire des agendas
 # --------------------------------------------------------------------------
 
-def _entry(email):
-    """Entree de cache de cet utilisateur, creee au besoin.
-
-    Chaque entree porte son propre verrou : deux utilisateurs ne s'attendent
-    jamais l'un l'autre pendant un aller-retour Supabase.
-    """
+def _entry(clean_email):
     with _registry_lock:
-        entry = _caches.get(email)
+        entry = _caches.get(clean_email)
         if entry is None:
             if len(_caches) >= MAX_CACHED_USERS:
                 oldest = min(_caches, key=lambda key: _caches[key]["fetched_at"])
@@ -114,29 +120,26 @@ def _entry(email):
                 "source": "",
                 "stale": False,
             }
-            _caches[email] = entry
+            _caches[clean_email] = entry
         return entry
 
 
-def _snapshot(entry, error=None):
+def _snapshot(entry, error=None, email=None):
     fetched = datetime.fromtimestamp(entry["fetched_at"], tz=timezone.utc)
     return {
         "events": entry["events"] or [],
         "fetchedAt": fetched.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source": entry["source"],
         "stale": entry["stale"],
+        "hasSession": storage.has_session(email) if email else False,
         "error": error,
     }
 
 
 def get_schedule(config, email, force=False):
-    """Agenda de l'utilisateur, depuis le cache memoire ou le stockage.
-
-    En cas d'echec on ressert la derniere version connue, marquee `stale`,
-    plutot que de casser l'affichage.
-    """
+    clean_email = storage.validate_and_normalize_email(email)
     ttl = config.get("refresh_seconds", DEFAULTS["refresh_seconds"])
-    entry = _entry(email)
+    entry = _entry(clean_email)
 
     with entry["lock"]:
         fresh_enough = (
@@ -145,28 +148,43 @@ def get_schedule(config, email, force=False):
             and (time.time() - entry["fetched_at"]) < ttl
         )
         if fresh_enough:
-            return _snapshot(entry)
+            return _snapshot(entry, email=clean_email)
 
         try:
-            text, source = storage.load_schedule(email)
+            text, source = storage.load_schedule(clean_email)
         except Exception as exc:
             if entry["events"] is None:
                 raise
             entry["stale"] = True
-            return _snapshot(entry, error=str(exc))
+            return _snapshot(entry, error=str(exc), email=clean_email)
 
-        entry.update(fetched_at=time.time(), events=ics.parse(text),
-                     source=source, stale=False)
-        return _snapshot(entry)
+        entry.update(
+            fetched_at=time.time(),
+            events=ics.parse(text),
+            source=source,
+            stale=False,
+        )
+        return _snapshot(entry, email=clean_email)
 
 
 # --------------------------------------------------------------------------
-# HTTP
+# HTTP Handler
 # --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
     config = dict(DEFAULTS)
-    server_version = "Auriga"
+    server_version = "EDT-Edusign"
+
+    def _send_security_headers(self):
+        """En-tetes HTTP de durcissement et securite."""
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+        self.send_header("X-XSS-Protection", "1; mode=block")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+        )
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -182,43 +200,63 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static(parsed.path)
 
     def do_POST(self):
-        if urllib.parse.urlparse(self.path).path != "/api/sync/start":
+        path = urllib.parse.urlparse(self.path).path
+
+        if path == "/api/sync/start":
+            client_ip = self.client_address[0] if self.client_address else "unknown"
+            if not _check_rate_limit(client_ip):
+                self._send_json(429, {"success": False, "error": "Trop de requetes. Veuillez patienter 1 minute."})
+                return
+
+            payload = self._read_json_body()
+            if payload is None:
+                return
+
+            try:
+                sync_id = sync_worker.start_sync(payload.get("email"), payload.get("password"))
+            except sync_worker.SyncBusy as exc:
+                self._send_json(429, {"success": False, "error": str(exc)})
+                return
+            except ValueError as exc:
+                self._send_json(400, {"success": False, "error": str(exc)})
+                return
+            self._send_json(200, {"success": True, "syncId": sync_id})
+
+        elif path == "/api/session/clear":
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            email = payload.get("email")
+            if email:
+                try:
+                    storage.clear_session(email)
+                except Exception:
+                    pass
+            self._send_json(200, {"success": True})
+
+        else:
             self.send_error(404, "Not Found")
-            return
-
-        payload = self._read_json_body()
-        if payload is None:
-            return
-
-        try:
-            sync_id = sync_worker.start_sync(payload.get("email"),
-                                             payload.get("password"))
-        except sync_worker.SyncBusy as exc:
-            self._send_json(429, {"success": False, "error": str(exc)})
-            return
-        except ValueError as exc:
-            self._send_json(400, {"success": False, "error": str(exc)})
-            return
-        self._send_json(200, {"success": True, "syncId": sync_id})
 
     # -- helpers ----------------------------------------------------------
 
     def _read_json_body(self):
-        """Corps JSON de la requete, ou None (la reponse d'erreur est envoyee)."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = -1
         if length <= 0 or length > MAX_BODY_BYTES:
-            self._send_json(400, {"success": False, "error": "Requete invalide."})
+            self._send_json(400, {"success": False, "error": "Requete invalide ou trop volumineuse."})
             return None
         try:
             return json.loads(self.rfile.read(length).decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
-            self._send_json(400, {"success": False, "error": "JSON invalide."})
+            self._send_json(400, {"success": False, "error": "Corps JSON invalide."})
             return None
 
     def _serve_schedule(self, email, force):
+        if not email:
+            self._send_json(400, {"events": [], "error": "Adresse email requise."})
+            return
         try:
             self._send_json(200, get_schedule(self.config, email, force=force))
         except (storage.NoScheduleError, ValueError) as exc:
@@ -233,13 +271,20 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_static(self, path):
         rel = "index.html" if path == "/" else urllib.parse.unquote(path).lstrip("/")
         target = os.path.normpath(os.path.join(PUBLIC_DIR, rel))
-        if not target.startswith(PUBLIC_DIR + os.sep) or not os.path.isfile(target):
+        abs_public = os.path.abspath(PUBLIC_DIR)
+        abs_target = os.path.abspath(target)
+
+        try:
+            if os.path.commonpath([abs_public, abs_target]) != abs_public or not os.path.isfile(abs_target):
+                self.send_error(404, "Not Found")
+                return
+        except (ValueError, OSError):
             self.send_error(404, "Not Found")
             return
 
-        stat = os.stat(target)
+        stat = os.stat(abs_target)
         etag = '"%x-%x"' % (int(stat.st_mtime), stat.st_size)
-        extension = os.path.splitext(target)[1].lower()
+        extension = os.path.splitext(abs_target)[1].lower()
 
         if extension in REVALIDATE_SUFFIXES:
             cache_control = "no-cache"
@@ -250,11 +295,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(304)
             self.send_header("ETag", etag)
             self.send_header("Cache-Control", cache_control)
+            self._send_security_headers()
             self.end_headers()
             return
 
-        ctype = MIME_OVERRIDES.get(extension) or mimetypes.guess_type(target)[0]
-        with open(target, "rb") as handle:
+        ctype = MIME_OVERRIDES.get(extension) or mimetypes.guess_type(abs_target)[0]
+        with open(abs_target, "rb") as handle:
             body = handle.read()
 
         self.send_response(200)
@@ -263,6 +309,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", cache_control)
         self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -272,11 +319,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
     def log_message(self, fmt, *args):
-        pass  # les logs utiles viennent de sync_worker et storage
+        pass
 
 
 def main():
@@ -286,7 +334,7 @@ def main():
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
 
-    print("Emploi du temps Auriga")
+    print("Emploi du temps Auriga / Edusign")
     print("  local     : http://localhost:%d" % port)
     print("  telephone : http://<ip-de-ce-pc>:%d (meme wifi)" % port)
     if not storage.supabase_config()[0]:

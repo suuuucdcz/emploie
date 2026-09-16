@@ -75,6 +75,7 @@ def _run_sync(sync_id, email, password):
     try:
         progress("Connexion a Edusign...")
         result = edusign_client.sync_schedule(email, password)
+        password = None  # purge immediate du mot de passe en memoire
         count = result["count"]
         destination = result["destination"]
         user = result.get("user", {})
@@ -97,20 +98,27 @@ def _run_sync(sync_id, email, password):
         fail(str(exc))
     except Exception as exc:
         fail(f"Erreur inattendue : {exc}")
+    finally:
+        password = None
 
 
-def start_sync(email, password):
-    """Lance une synchronisation Edusign et renvoie son identifiant."""
-    if not email or not password:
-        raise ValueError("Email et mot de passe requis.")
-    storage.cache_key(email)  # valide le format d'email
+def start_sync(email, password=None):
+    """Lance une synchronisation Edusign et renvoie son identifiant.
+    
+    Le mot de passe est optionnel si une session active (Option B) est enregistree.
+    """
+    clean_email = storage.validate_and_normalize_email(email)
+
+    # Si aucun mot de passe n'est fourni, verifier qu'une session existe
+    if not password and not storage.has_session(clean_email):
+        raise ValueError("Mot de passe Edusign requis pour la première connexion.")
 
     sync_id = secrets.token_urlsafe(24)
     with _lock:
         _prune_locked()
         if _active_count_locked() >= MAX_CONCURRENT_SYNCS:
             raise SyncBusy("Trop de synchronisations en cours, reessaie dans quelques secondes.")
-        if any(s["email"] == email and s["status"] in ACTIVE_STATUSES
+        if any(s["email"] == clean_email and s["status"] in ACTIVE_STATUSES
                for s in _states.values()):
             raise SyncBusy("Une synchronisation est deja en cours pour ce compte.")
 
@@ -118,11 +126,11 @@ def start_sync(email, password):
             "status": "starting",
             "detail": "Demarrage de la synchronisation...",
             "error_msg": None,
-            "email": email,
+            "email": clean_email,
             "created_at": time.time(),
             "updated_at": time.time(),
         }
 
-    thread = threading.Thread(target=_run_sync, args=(sync_id, email, password), daemon=True)
+    thread = threading.Thread(target=_run_sync, args=(sync_id, clean_email, password), daemon=True)
     thread.start()
     return sync_id

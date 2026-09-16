@@ -1,10 +1,11 @@
-"""Connecteur API Edusign - Synchronisation ultra-rapide sans navigateur.
+"""Connecteur API Edusign - Synchronisation legere avec session persistante (Option B).
 
-Interroge directement l'API REST officielle d'Edusign :
-  1. Authentification directe (POST /student/account/getByCredentials)
-  2. Telechargement des cours (GET /student/planning)
-  3. Resolution des enseignants (POST /student/professors)
-  4. Serialisation au format ICS standard (RFC 5545) et sauvegarde
+Supporte :
+  1. Connexion par identifiants (POST /student/account/getByCredentials)
+  2. Renouvellement silencieux sans mot de passe (POST /student/account/auth/refresh)
+  3. Telechargement du planning (GET /student/planning)
+  4. Resolution des professeurs (POST /student/professors)
+  5. Conversion ICS RFC 5545 et sauvegarde
 """
 
 import json
@@ -27,7 +28,7 @@ class EdusignError(Exception):
     """Erreur lors d'un appel a l'API Edusign."""
 
 
-def _http_request(url, method="GET", data=None, headers=None, timeout=20):
+def _http_request(url, method="GET", data=None, headers=None, timeout=25):
     """Effectue une requete HTTP JSON vers l'API Edusign."""
     req_headers = {
         "Accept": "application/json, text/plain, */*",
@@ -59,10 +60,11 @@ def _http_request(url, method="GET", data=None, headers=None, timeout=20):
 
 
 def login(email, password, device_id=None):
-    """Connexion classique Edusign. Renvoie (token, refresh_token, device_id, user_info)."""
+    """Connexion classique Edusign. Renvoie (access_token, refresh_token, device_id, user_info)."""
+    email = storage.validate_and_normalize_email(email)
     device_id = device_id or str(uuid.uuid4())
     payload = {
-        "EMAIL": email.strip(),
+        "EMAIL": email,
         "PASSWORD": password,
         "LANGUAGE": "fr",
     }
@@ -82,6 +84,20 @@ def login(email, password, device_id=None):
         "schoolId": data.get("SCHOOL_ID"),
     }
     return token, refresh_token, device_id, user
+
+
+def refresh_tokens(refresh_token, device_id):
+    """Renouvelle la session a partir du refresh token. Renvoie (access_token, new_refresh_token)."""
+    headers = {"x-device-id": device_id}
+    payload = {"refresh_token": refresh_token}
+    res = _http_request(f"{API_BASE}/account/auth/refresh", method="POST", data=payload, headers=headers)
+    if res.get("status") != "success" or "result" not in res:
+        raise EdusignError("Session expiree ou invalide.")
+
+    data = res["result"]
+    new_access_token = data.get("access_token")
+    new_refresh_token = data.get("refresh_token") or refresh_token
+    return new_access_token, new_refresh_token
 
 
 def fetch_planning(token, device_id, start_iso, end_iso):
@@ -157,14 +173,42 @@ def default_academic_dates():
     return start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"), end_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
-def sync_schedule(email, password, device_id=None):
-    """Execute la synchronisation complete en arriere-plan.
+def sync_schedule(email, password=None, refresh_token=None, device_id=None):
+    """Synchronise l'emploi du temps.
     
-    Renvoie un dictionnaire avec le nombre de cours et la destination.
+    1. Si une session (refresh_token + device_id) existe, tente un renouvellement silencieux.
+    2. Sinon, ou en cas d'echec de renouvellement, utilise le mot de passe s'il est fourni.
+    3. Sauvegarde le planning et les jetons de session mis a jour.
     """
-    token, refresh_token, device_id, user = login(email, password, device_id)
-    start_iso, end_iso = default_academic_dates()
+    email = storage.validate_and_normalize_email(email)
+    token = None
+    new_refresh_token = None
+    user = {}
+    auth_method = "token"
 
+    # Verifier si une session existe deja
+    if not refresh_token or not device_id:
+        cached_rt, cached_did = storage.get_session(email)
+        if cached_rt and cached_did:
+            refresh_token, device_id = cached_rt, cached_did
+
+    # Tentative de renouvellement silencieux sans mot de passe
+    if refresh_token and device_id:
+        try:
+            token, new_refresh_token = refresh_tokens(refresh_token, device_id)
+        except EdusignError:
+            # Token invalide ou expire : on retombe sur le mot de passe
+            storage.clear_session(email)
+            token = None
+
+    # Si pas de token actif, connexion par mot de passe obligatoire
+    if not token:
+        if not password:
+            raise EdusignError("Session expiree. Veuillez saisir votre mot de passe Edusign.")
+        token, new_refresh_token, device_id, user = login(email, password, device_id)
+        auth_method = "credentials"
+
+    start_iso, end_iso = default_academic_dates()
     courses = fetch_planning(token, device_id, start_iso, end_iso)
     if not courses:
         raise EdusignError("Aucun cours trouve sur Edusign pour cette annee.")
@@ -175,10 +219,15 @@ def sync_schedule(email, password, device_id=None):
     events = edusign_to_events(courses, professors)
     ics_text = ics_builder.build_ics(events)
 
-    destination = storage.save_schedule(email, ics_text)
+    # Sauvegarde de l'agenda ET des jetons de session
+    destination = storage.save_schedule(
+        email, ics_text, refresh_token=new_refresh_token, device_id=device_id
+    )
+
     return {
         "success": True,
         "count": len(events),
         "destination": destination,
+        "authMethod": auth_method,
         "user": user,
     }

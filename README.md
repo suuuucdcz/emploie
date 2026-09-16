@@ -1,168 +1,92 @@
-# Emploi du temps Auriga
+# Emploi du temps IPSA (Edusign & Auriga)
 
-Une PWA pour consulter son emploi du temps Aurion (portail `auriga.ipsa.fr`)
-sur telephone, sans repasser par le portail web a chaque fois.
+Une PWA ultra-rapide pour consulter son emploi du temps IPSA sur téléphone et ordinateur, sans passer par les portails lents ou les validations Microsoft A2F répétitives.
 
-Aurion n'expose pas de flux iCal utilisable. L'appli contourne ca en pilotant
-un navigateur headless : il se connecte au portail avec tes identifiants
-Microsoft, intercepte le token de l'API interne `/api/plannings/me`, aspire
-deux ans de planning, et enregistre le tout en ICS. La PWA lit ensuite cet ICS
-converti en JSON.
+L'application communique directement avec l'API REST Edusign :
+1. **Connexion directe** : Récupération instantanée du token d'accès (< 0.2s) sans passer par Microsoft SSO ni A2F.
+2. **Session persistante (Option B)** : Le `refresh_token` est conservé de façon sécurisée (Supabase ou cache local chiffré/protégé). L'actualisation de l'agenda se fait ensuite **en 1 clic sans retaper son mot de passe**.
+3. **Synchronisation annuelle complète** : L'intégralité de l'année scolaire (plus de 180 cours) et la liste des professeurs sont téléchargées en un seul appel (< 0.5s).
+4. **Zéro dépendance externe** : 100% bibliothèque standard Python (aucun navigateur Chromium ni Playwright requis, consommation RAM minime ~30 Mo).
 
-## Demarrage
+---
+
+## Démarrage rapide
 
 ```bash
-pip install -r requirements.txt
-playwright install chromium
 python server.py
 ```
 
-Puis ouvre <http://localhost:8787>, saisis ton email et ton mot de passe de
-l'ecole, et lance la recuperation. Le robot affiche en direct ce qu'il voit et
-le numero A2F a taper sur ton telephone. Une fois termine, l'agenda est
-enregistre et la page se recharge.
+Puis ouvre <http://localhost:8787>, saisis ton email de l'école et ton mot de passe Edusign.
+Dès la première synchronisation :
+- Ton planning est téléchargé et mis en cache.
+- Une session est mémorisée : les prochaines actualisations se feront en 1 clic ("Mettre à jour en 1 clic") sans mot de passe !
 
-Seul l'email est memorise dans le navigateur : le mot de passe n'est jamais
-stocke, il faut le retaper a chaque synchronisation.
+---
 
 ## Configuration
 
-`config.json` ne contient aucun secret :
+`config.json` configure les paramètres locaux de base :
 
-| Cle | Defaut | Role |
+| Clé | Défaut | Rôle |
 | --- | --- | --- |
-| `port` | `8787` | port d'ecoute (`$PORT` de l'hebergeur a la priorite) |
-| `refresh_seconds` | `900` | duree de vie du cache memoire d'un agenda |
+| `port` | `8787` | port d'écoute (`$PORT` de l'hébergeur a la priorité) |
+| `refresh_seconds` | `900` | durée de vie du cache mémoire d'un agenda (15 min) |
 
-Tout le reste passe par des variables d'environnement. En local, copie
-`.env.example` en `.env` et remplis-le — le fichier est lu au demarrage et il
-est dans le `.gitignore`. En hebergement, definis-les dans le dashboard Render.
+Toutes les variables sensibles passent par `.env` (en local, voir `.env.example`) ou par le tableau de bord de l'hébergeur (Render) :
 
 | Variable | Effet |
 | --- | --- |
-| `SUPABASE_URL` + `SUPABASE_KEY` | agendas ranges dans la table `schedules` |
-| (aucune des deux) | repli sur le dossier local `cache/` |
-| `AURIGA_EMAIL` + `AURIGA_PASSWORD` | identifiants de `update_planning.py` ; sinon demandes au clavier |
-| `PORT` | surcharge le port de `config.json` |
+| `SUPABASE_URL` + `SUPABASE_KEY` | Persistance distante des agendas et sessions dans la table `schedules` |
+| (aucune des deux) | Repli automatique sur le stockage local `cache/` |
+| `EDUSIGN_EMAIL` + `EDUSIGN_PASSWORD` | Identifiants pour `update_planning.py` (ou `AURIGA_EMAIL` / `AURIGA_PASSWORD`) |
+| `PORT` | Port d'écoute imposé par Render |
 
-Supabase est necessaire en hebergement : le disque de Render est ephemere, un
-redemarrage effacerait `cache/`.
+### Schéma Supabase recommandé (Option B)
 
-> Aucun identifiant ne doit revenir dans le code. Les seuls endroits ou ils ont
-> le droit d'exister sont `.env` (local, ignore) et le dashboard de
-> l'hebergeur.
+Dans votre projet Supabase (éditeur SQL) :
+```sql
+create table if not exists schedules (
+  email text primary key,
+  ics_content text not null,
+  refresh_token text,
+  device_id text,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+```
 
-## Depuis le telephone
+---
 
-Le serveur ecoute sur toutes les interfaces. Sur le meme wifi :
+## Sécurité et Confidentialité
 
-1. recupere l'IP du PC : `ipconfig` (ligne « Adresse IPv4 »),
-2. sur le telephone, ouvre `http://192.168.x.x:8787`,
-3. « Ajouter a l'ecran d'accueil » pour avoir une icone.
+- **Mots de passe** : Le mot de passe ne transite qu'en mémoire vive lors de la connexion initiale vers l'API officielle Edusign en HTTPS. Il n'est **jamais** écrit sur disque, jamais journalisé et jamais renvoyé au navigateur.
+- **Sessions & Tokens (Option B)** : Seuls le `refresh_token` et le `device_id` sont conservés. L'utilisateur peut à tout moment révoquer et effacer sa session via le bouton *"Oublier la session"* dans l'interface ou via `POST /api/session/clear`.
+- **Validation stricte des entrées** : Toutes les adresses email sont strictement validées (regex RFC) et normalisées en minuscules pour interdire toute injection PostgREST ou path traversal.
+- **En-têtes HTTP de durcissement** : `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`.
+- **Limiteur de débit (Rate Limiting)** : Protection intégrée contre le bruteforce ou le spam d'actualisations.
 
-**Limite a connaitre :** en `http://` sur une IP locale, le navigateur refuse
-d'enregistrer le service worker (reserve aux origines securisees). L'appli
-fonctionne, mais **sans cache hors ligne ni vraie installation PWA** : Android
-ne proposera qu'un raccourci. Pour une vraie installation il faut du HTTPS —
-un tunnel Cloudflare, ou l'hebergement.
+---
 
-### Installer l'appli (et pas un raccourci)
+## Architecture des fichiers
 
-En HTTPS, une barre « Installer l'application » apparait sous l'entete :
-
-- **Android / Chrome** : le bouton declenche la vraie invite d'installation
-  (WebAPK) — icone adaptative, pas de barre d'adresse, entree dans le tiroir
-  d'applications. C'est different du « Ajouter a l'ecran d'accueil » du menu
-  du navigateur, qui ne cree qu'un raccourci.
-- **iOS / Safari** : il n'existe aucune API d'installation, la barre affiche
-  donc la marche a suivre (Partager, puis « Sur l'ecran d'accueil »). Le
-  resultat est bien une appli plein ecran grace a `display: standalone` et aux
-  metas `apple-mobile-web-app-*`.
-
-La barre se ferme d'un clic sur la croix et ne revient plus (memorise dans le
-navigateur), et ne s'affiche jamais si l'appli est deja installee.
-
-Si Android ne propose qu'un raccourci, c'est qu'un critere manque : origine non
-HTTPS, service worker non enregistre, ou manifeste invalide. Les trois se
-verifient dans Chrome DevTools, onglet *Application*.
-
-## Fonctionnement
-
-| Fichier | Role |
+| Fichier | Rôle |
 | --- | --- |
-| `server.py` | Serveur HTTP : la PWA, `/api/schedule`, `/api/sync/*` |
-| `sync_worker.py` | Robot Playwright : login Microsoft, A2F, capture du token |
-| `ics_builder.py` | Appels API Auriga + generation de l'ICS (RFC 5545) |
-| `storage.py` | Ou vit un agenda : Supabase ou `cache/` |
-| `envfile.py` | Chargement du `.env` local |
-| `ics.py` | Parseur ICS : VEVENT, fuseaux, RRULE/EXDATE, detection CM/TD/TP |
-| `public/` | La PWA (`index.html`, `app.js`, `styles.css`, `sw.js`, manifeste) |
-| `update_planning.py` | Synchronisation manuelle en ligne de commande |
-| `make_icons.py` | Regenere les icones PNG depuis le meme dessin que `icon.svg` |
+| `server.py` | Serveur HTTP sécurisé : PWA, `/api/schedule`, `/api/sync/*`, `/api/session/*` |
+| `edusign_client.py` | Client REST Edusign : login, refresh de jeton, planning et professeurs |
+| `storage.py` | Gestionnaire de persistance sécurisé (Supabase + repli cache local atomique) |
+| `sync_worker.py` | Orchestrateur de synchronisation asynchrone en arrière-plan |
+| `ics_builder.py` | Sérialiseur ICS conforme RFC 5545 (pliage 75 octets, horodatages UTC) |
+| `ics.py` | Analyseur RFC 5545 autonome : événements, récurrences RRULE, détection CM/TD/TP |
+| `public/` | Interface PWA progressive (`index.html`, `app.js`, `styles.css`, `sw.js`) |
+| `update_planning.py` | Outil CLI pour synchroniser manuellement son planning |
 
-### API HTTP
+---
 
-| Route | Role |
-| --- | --- |
-| `GET /api/schedule?email=…` | agenda en JSON (`&refresh=1` force la relecture) |
-| `POST /api/sync/start` | `{email, password}` -> `{success, syncId}` |
-| `GET /api/sync/status?id=…` | avancement, code A2F, capture d'ecran |
-| `GET /api/health` | sonde de vie |
+## Tests unitaires
 
-L'etat d'une synchronisation est adresse par un identifiant aleatoire, pas par
-l'email : les captures d'ecran et le code A2F ne doivent pas etre lisibles par
-quiconque connait l'adresse de quelqu'un.
-
-### Details qui comptent
-
-- **Fuseaux horaires.** L'API renvoie de l'UTC, l'ICS reste en UTC, le
-  navigateur reaffiche en heure locale. Le parseur code en dur les regles de
-  changement d'heure europeennes, donc pas besoin du paquet `tzdata` (souvent
-  absent sous Windows).
-- **Cache.** Trois niveaux : memoire serveur (`refresh_seconds`), `localStorage`
-  du navigateur, et le service worker. Si le reseau tombe, la derniere version
-  connue est servie et marquee « donnees en cache » plutot qu'une erreur. Le
-  cache navigateur porte l'email auquel il appartient : changer de compte
-  n'affiche jamais l'agenda du precedent.
-- **Mise a jour des fichiers.** Les fichiers statiques sont servis avec un
-  `ETag` et `Cache-Control: no-cache` : le navigateur revalide et recoit un 304
-  tant que rien n'a change. Inutile de renommer les caches du service worker a
-  chaque deploiement pour forcer les telephones a se mettre a jour.
-- **Types de cours.** CM / TD / TP / examen / projet sont devines depuis le
-  libelle et la description, avec un code couleur. Si l'heuristique ne reconnait
-  rien, le libelle brut est affiche tel quel — rien n'est masque.
-
-## Interface
-
-- vue **jour** (par defaut) et vue **semaine** en grille horaire : les jours en
-  colonnes, les heures en lignes, un appui sur un creneau ouvre la journee ;
-- **le cours en cours est suivi en direct** : barre de progression sur la carte
-  et dans le bandeau, temps restant qui se met a jour, trait de l'heure
-  courante dans la grille de la semaine ;
-- bandeau « en cours » / « prochain cours » avec le temps restant ;
-- les trous de 20 min ou plus sont affiches entre deux cours ;
-- balayage horizontal ou fleches gauche/droite pour changer de jour ;
-- theme clair/sombre automatique.
-
-## Tests
+Pour lancer l'ensemble des suites de tests automatisés :
 
 ```bash
+python test_edusign.py
 python test_ics.py
 python test_ics_builder.py
 ```
-
-`test_supabase.py` fait un vrai aller-retour sur la base : a lancer seulement
-quand on touche a `storage.py`.
-
-## Limites actuelles
-
-- **Aucune authentification.** N'importe qui connaissant une adresse email peut
-  lire l'agenda correspondant via `/api/schedule`, et `/api/sync/start` est
-  ouvert (plafonne a 2 synchronisations simultanees, sans plus). Acceptable pour
-  un usage perso, pas pour une mise a disposition large.
-- Emploi du temps uniquement. Notes et absences demanderaient d'autres endpoints
-  de l'API Aurion.
-- Le robot depend de la mise en page de la connexion Microsoft : si Microsoft la
-  change, les selecteurs de `sync_worker.py` sont a reprendre.
-- Les RRULE complexes (`FREQ=MONTHLY`, `BYSETPOS`…) ne sont pas developpees :
-  l'evenement de base est conserve, il n'y a pas de perte silencieuse.

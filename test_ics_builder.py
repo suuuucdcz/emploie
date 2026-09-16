@@ -1,6 +1,6 @@
 """Tests du generateur ICS : python test_ics_builder.py"""
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import ics
 import ics_builder
@@ -18,48 +18,16 @@ def check(label, got, expected):
 
 NOW = datetime(2026, 9, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-PAYLOAD = {
-    "interventions": [
-        {
-            "id": 42,
-            "startDateTime": "2026-09-07T08:00:00Z",
-            "endDateTime": "2026-09-07T10:00:00Z",
-            "activityType": {"code": "TD"},
-            "interventionPedagogicalUnits": [
-                {"pedagogicalUnit": {"caption": {"fr": "Bases de donnees, SQL; niveau 2"}}}
-            ],
-            "interventionInstructors": [
-                {"person": {"currentFirstName": "Ada", "currentLastName": "Lovelace"}}
-            ],
-            "interventionResources": [
-                {"resource": {"isRoom": True, "caption": {"fr": "T- 2.0"}}},
-                {"resource": {"isRoom": False, "caption": {"fr": "Videoprojecteur"}}},
-            ],
-        },
-        # Doublon : la meme intervention revient dans deux tranches de dates.
-        {
-            "id": 42,
-            "startDateTime": "2026-09-07T08:00:00Z",
-            "endDateTime": "2026-09-07T10:00:00Z",
-        },
-    ]
-}
-
-
-print("fenetre universitaire")
-check("depuis septembre", ics_builder.academic_range(date(2026, 9, 15))[0], date(2026, 8, 1))
-check("depuis fevrier", ics_builder.academic_range(date(2027, 2, 3))[0], date(2026, 8, 1))
-check("deux ans de large", ics_builder.academic_range(date(2026, 9, 15))[1], date(2028, 8, 1))
-chunks = list(ics_builder.iter_chunks(date(2026, 8, 1), date(2026, 9, 30)))
-check("tranches jointives", chunks[1][0], chunks[0][1] + timedelta(days=1))
-check("derniere tranche bornee", chunks[-1][1], date(2026, 9, 30))
-
-print("normalisation")
-events = ics_builder.extract_events([PAYLOAD])
-check("doublon supprime", len(events), 1)
-check("titre = type + matiere", events[0]["summary"], "TD - Bases de donnees, SQL; niveau 2")
-check("enseignant etiquete", events[0]["description"], "Enseignant : Ada Lovelace")
-check("seules les salles", events[0]["location"], "T- 2.0")
+EVENTS = [
+    {
+        "uid": "12345@edusign",
+        "start": "2026-09-07T08:00:00Z",
+        "end": "2026-09-07T10:00:00Z",
+        "summary": "TD - Bases de donnees, SQL; niveau 2",
+        "description": "Enseignant : Ada Lovelace",
+        "location": "T- 2.0",
+    }
+]
 
 print("horodatages")
 check("suffixe Z", ics_builder._to_utc_stamp("2026-09-07T08:00:00Z"), "20260907T080000Z")
@@ -72,16 +40,22 @@ check("antislash", ics_builder.escape_text("a\\b"), "a\\\\b")
 check("saut de ligne", ics_builder.escape_text("a\r\nb"), "a\\nb")
 
 print("serialisation")
-text = ics_builder.build_ics(events, now=NOW)
+text = ics_builder.build_ics(EVENTS, now=NOW)
 check("fins de ligne CRLF", "\n" in text.replace("\r\n", ""), False)
 check("DTSTAMP present", "DTSTAMP:20260901T120000Z" in text, True)
+check("PRODID Edusign", "PRODID:-//Edusign//NONSGML v1.0//EN" in text, True)
 check("virgule echappee", "Bases de donnees\\, SQL\\; niveau 2" in text, True)
 check("lignes <= 75 octets",
       max(len(line.encode("utf-8")) for line in text.split("\r\n")) <= 75, True)
 
-long_event = [{"uid": "x@auriga", "start": "2026-09-07T08:00:00Z",
-               "end": "2026-09-07T10:00:00Z", "summary": "Mecanique " * 12,
-               "description": "", "location": ""}]
+long_event = [{
+    "uid": "long@edusign",
+    "start": "2026-09-07T08:00:00Z",
+    "end": "2026-09-07T10:00:00Z",
+    "summary": "Mecanique " * 12,
+    "description": "",
+    "location": "",
+}]
 folded = ics_builder.build_ics(long_event, now=NOW)
 check("ligne longue repliee", "\r\n " in folded, True)
 

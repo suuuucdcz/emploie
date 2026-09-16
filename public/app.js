@@ -668,7 +668,10 @@ const POLL_MS = 600;
 
 const sync = {
   modal: document.getElementById('sync-modal'),
+  hint: document.getElementById('sync-hint'),
   startBtn: document.getElementById('sync-start-btn'),
+  togglePwdBtn: document.getElementById('sync-toggle-pwd'),
+  logoutBtn: document.getElementById('sync-logout-btn'),
   closeBtn: document.getElementById('sync-close-btn'),
   status: document.getElementById('sync-status'),
   email: document.getElementById('sync-email'),
@@ -681,9 +684,27 @@ let syncDismissed = false;
 let syncTimer = null;
 let syncId = null;
 
+function updateModalFields() {
+  const hasSession = Boolean(state.meta && state.meta.hasSession);
+  if (hasSession) {
+    sync.password.hidden = true;
+    sync.togglePwdBtn.hidden = false;
+    if (sync.logoutBtn) sync.logoutBtn.hidden = false;
+    sync.startBtn.textContent = 'Mettre \u00E0 jour en 1 clic';
+    if (sync.hint) sync.hint.textContent = 'Session active : actualisation imm\u00E9diate sans mot de passe.';
+  } else {
+    sync.password.hidden = false;
+    sync.togglePwdBtn.hidden = true;
+    if (sync.logoutBtn) sync.logoutBtn.hidden = true;
+    sync.startBtn.textContent = 'Synchroniser maintenant';
+    if (sync.hint) sync.hint.textContent = 'Connexion directe et instantan\u00E9e \u00E0 l\'API Edusign (sans A2F).';
+  }
+}
+
 function openSyncModal({ force = false } = {}) {
   if (syncDismissed && !force) return;
   if (force) syncDismissed = false;
+  updateModalFields();
   sync.modal.hidden = false;
 }
 
@@ -719,6 +740,12 @@ function applySyncState(st) {
       finishSync('Termin\u00E9 ! ' + (st.detail || 'Le planning est \u00E0 jour.'), { reload: true });
       break;
     case 'error':
+      if (sync.password.hidden) {
+        sync.password.hidden = false;
+        sync.togglePwdBtn.hidden = true;
+        sync.startBtn.textContent = 'Synchroniser maintenant';
+        sync.password.focus();
+      }
       finishSync('Erreur : ' + (st.error_msg || 'Identifiants ou connexion impossible'));
       break;
     case 'unknown':
@@ -740,8 +767,12 @@ function pollSync() {
 async function startSync() {
   const email = sync.email.value.trim();
   const password = sync.password.value;
-  if (!email || !password) {
-    sync.status.textContent = 'Email et mot de passe Edusign requis.';
+  if (!email) {
+    sync.status.textContent = 'Email de l\'\u00E9cole requis.';
+    return;
+  }
+  if (!password && !sync.password.hidden) {
+    sync.status.textContent = 'Mot de passe Edusign requis.';
     return;
   }
 
@@ -754,10 +785,18 @@ async function startSync() {
     const res = await fetch('/api/sync/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password: password || '' }),
     });
     const payload = await res.json();
-    if (!payload.success) throw new Error(payload.error || 'demarrage impossible');
+    if (!payload.success) {
+      if (sync.password.hidden) {
+        sync.password.hidden = false;
+        sync.togglePwdBtn.hidden = true;
+        sync.startBtn.textContent = 'Synchroniser maintenant';
+        sync.password.focus();
+      }
+      throw new Error(payload.error || 'demarrage impossible');
+    }
 
     syncId = payload.syncId;
     sync.password.value = '';
@@ -765,6 +804,36 @@ async function startSync() {
   } catch (err) {
     finishSync('Erreur : ' + err.message);
   }
+}
+
+if (sync.togglePwdBtn) {
+  sync.togglePwdBtn.addEventListener('click', () => {
+    sync.password.hidden = false;
+    sync.togglePwdBtn.hidden = true;
+    sync.startBtn.textContent = 'Synchroniser maintenant';
+    sync.password.focus();
+  });
+}
+
+if (sync.logoutBtn) {
+  sync.logoutBtn.addEventListener('click', async () => {
+    const email = sync.email.value.trim();
+    if (email) {
+      try {
+        await fetch('/api/session/clear', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+      } catch (err) {}
+    }
+    localStorage.removeItem('auriga_email');
+    localStorage.removeItem(CACHE_KEY);
+    if (state.meta) state.meta.hasSession = false;
+    sync.password.value = '';
+    updateModalFields();
+    sync.status.textContent = 'Session oubli\u00E9e. Vous \u00EAtes d\u00E9connect\u00E9.';
+  });
 }
 
 sync.startBtn.addEventListener('click', startSync);
