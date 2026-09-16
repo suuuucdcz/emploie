@@ -137,8 +137,15 @@ def _expand(start, end, rrule, exdates):
     if freq not in ("DAILY", "WEEKLY"):
         return [(start, end)]  # non gere : on garde l'occurrence de base
 
-    interval = max(1, int(rrule.get("INTERVAL") or 1))
-    count = int(rrule["COUNT"]) if rrule.get("COUNT") else None
+    try:
+        interval = max(1, int(rrule.get("INTERVAL") or 1))
+    except (ValueError, TypeError):
+        interval = 1
+
+    try:
+        count = int(rrule["COUNT"]) if rrule.get("COUNT") else None
+    except (ValueError, TypeError):
+        count = None
 
     until = None
     if rrule.get("UNTIL"):
@@ -163,7 +170,7 @@ def _expand(start, end, rrule, exdates):
 
     while generated < MAX_OCCURRENCES and cursor <= horizon:
         if freq == "DAILY":
-            candidates = [cursor]
+            candidates = [cursor] if not bydays or cursor.weekday() in bydays else []
             step = timedelta(days=interval)
         else:
             week_start = cursor - timedelta(days=cursor.weekday())

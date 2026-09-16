@@ -28,6 +28,11 @@ class EdusignError(Exception):
     """Erreur lors d'un appel a l'API Edusign."""
 
 
+def _check_cancelled(is_cancelled):
+    if is_cancelled and is_cancelled():
+        raise EdusignError("Synchronisation annulée après dépassement du délai.")
+
+
 def _http_request(url, method="GET", data=None, headers=None, timeout=25):
     """Effectue une requete HTTP JSON vers l'API Edusign."""
     req_headers = {
@@ -76,6 +81,8 @@ def login(email, password, device_id=None):
     data = res["result"]
     token = data.get("ACCESS_TOKEN") or data.get("TOKEN")
     refresh_token = data.get("REFRESH_TOKEN")
+    if not token:
+        raise EdusignError("Réponse de connexion Edusign incomplète.")
     user = {
         "id": data.get("ID"),
         "email": data.get("EMAIL"),
@@ -97,6 +104,8 @@ def refresh_tokens(refresh_token, device_id):
     data = res["result"]
     new_access_token = data.get("access_token")
     new_refresh_token = data.get("refresh_token") or refresh_token
+    if not new_access_token:
+        raise EdusignError("Réponse de renouvellement Edusign incomplète.")
     return new_access_token, new_refresh_token
 
 
@@ -214,7 +223,7 @@ def default_academic_dates():
     return start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"), end_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
-def sync_schedule(email, password=None, refresh_token=None, device_id=None):
+def sync_schedule(email, password=None, refresh_token=None, device_id=None, is_cancelled=None):
     """Synchronise l'emploi du temps.
     
     1. Si une session (refresh_token + device_id) existe, tente un renouvellement silencieux.
@@ -227,45 +236,45 @@ def sync_schedule(email, password=None, refresh_token=None, device_id=None):
     user = {}
     auth_method = "token"
 
-    # Verifier si une session existe deja
-    if not refresh_token or not device_id:
-        cached_rt, cached_did = storage.get_session(email)
-        if cached_rt and cached_did:
-            refresh_token, device_id = cached_rt, cached_did
-
-    # Tentative de renouvellement silencieux sans mot de passe
-    if refresh_token and device_id:
+    # Un mot de passe fourni force une nouvelle connexion : autrement un
+    # changement d'appareil reutiliserait silencieusement la session precedente.
+    if password:
+        _check_cancelled(is_cancelled)
+        token, new_refresh_token, device_id, user = login(email, password, device_id)
+        auth_method = "credentials"
+    else:
+        if not refresh_token or not device_id:
+            refresh_token, device_id = storage.get_session(email)
+        if not refresh_token or not device_id:
+            raise EdusignError("Session expiree. Veuillez saisir votre mot de passe Edusign.")
+        _check_cancelled(is_cancelled)
         try:
             token, new_refresh_token = refresh_tokens(refresh_token, device_id)
         except EdusignError:
-            # Token invalide ou expire : on retombe sur le mot de passe
             storage.clear_session(email)
-            token = None
-
-    # Si pas de token actif, connexion par mot de passe obligatoire
-    if not token:
-        if not password:
             raise EdusignError("Session expiree. Veuillez saisir votre mot de passe Edusign.")
-        token, new_refresh_token, device_id, user = login(email, password, device_id)
-        auth_method = "credentials"
 
     start_iso, end_iso = default_academic_dates()
+    _check_cancelled(is_cancelled)
     courses = fetch_planning(token, device_id, start_iso, end_iso)
     if not courses:
         raise EdusignError("Aucun cours trouve sur Edusign pour cette annee.")
 
     prof_ids = [c.get("PROFESSOR") for c in courses if c.get("PROFESSOR")]
+    _check_cancelled(is_cancelled)
     professors = fetch_professors(token, device_id, prof_ids)
 
     events = edusign_to_events(courses, professors)
     ics_text = ics_builder.build_ics(events)
 
     # Sauvegarde de l'agenda ET des jetons de session
+    _check_cancelled(is_cancelled)
     destination = storage.save_schedule(
         email, ics_text, refresh_token=new_refresh_token, device_id=device_id
     )
 
     # Sauvegarde optionnelle des statistiques d'assiduite
+    _check_cancelled(is_cancelled)
     absences_stats = fetch_absence_statistics(token, device_id, start_iso, end_iso)
     if absences_stats:
         storage.save_absences(email, absences_stats)

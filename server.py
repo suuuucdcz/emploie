@@ -36,11 +36,13 @@ DEFAULTS = {
 MAX_BODY_BYTES = 4096
 MAX_CACHED_USERS = 100
 
-# Limiteur de requetes pour eviter le flood de synchronisation
+# Limiteur de requetes pour eviter le flood de synchronisation et d'API
 _rate_lock = threading.Lock()
 _rate_limits = {}
-RATE_LIMIT_WINDOW = 60  # secondes
-RATE_LIMIT_MAX = 6      # max tentatives de sync par IP par minute
+RATE_LIMIT_SYNC_WINDOW = 60    # secondes
+RATE_LIMIT_SYNC_MAX = 6        # max tentatives de sync par IP par minute
+RATE_LIMIT_API_WINDOW = 60     # secondes
+RATE_LIMIT_API_MAX = 60        # max requetes GET API par IP par minute
 
 # Surcharge MIME pour Windows (ou .js est parfois declare en text/plain)
 MIME_OVERRIDES = {
@@ -60,18 +62,39 @@ _registry_lock = threading.Lock()
 _caches = {}
 
 
-def _check_rate_limit(ip):
-    """Verifie que l'IP ne depasse pas le quota de requetes par fenetre."""
+def _check_rate_limit(ip, scope="sync", max_requests=RATE_LIMIT_SYNC_MAX, window=RATE_LIMIT_SYNC_WINDOW):
+    """Verifie que l'IP ne depasse pas le quota de requetes par fenetre et par scope."""
     now = time.time()
+    key = (ip, scope)
     with _rate_lock:
-        timestamps = _rate_limits.get(ip, [])
-        timestamps = [t for t in timestamps if now - t < RATE_LIMIT_WINDOW]
-        if len(timestamps) >= RATE_LIMIT_MAX:
-            _rate_limits[ip] = timestamps
+        if len(_rate_limits) > 500:
+            cutoff = now - max(RATE_LIMIT_SYNC_WINDOW, RATE_LIMIT_API_WINDOW)
+            expired = [k for k, v in _rate_limits.items() if not v or v[-1] < cutoff]
+            for k in expired:
+                del _rate_limits[k]
+        timestamps = _rate_limits.get(key, [])
+        timestamps = [t for t in timestamps if now - t < window]
+        if len(timestamps) >= max_requests:
+            _rate_limits[key] = timestamps
             return False
         timestamps.append(now)
-        _rate_limits[ip] = timestamps
+        _rate_limits[key] = timestamps
         return True
+
+
+def _is_past_event(evt, now_dt):
+    """Verifie si un cours est passe en comparant proprement les horodatages ISO 8601."""
+    end_str = evt.get("end")
+    if not isinstance(end_str, str) or not end_str:
+        return False
+    try:
+        clean = end_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt <= now_dt
+    except Exception:
+        return end_str <= now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --------------------------------------------------------------------------
@@ -92,12 +115,28 @@ def load_config(argv=None):
     parser.add_argument("--port", type=int, help="Port d'ecoute")
     args = parser.parse_args(argv)
 
-    if args.port:
+    if args.port is not None:
         config["port"] = args.port
 
     hosted_port = os.environ.get("PORT") or os.environ.get("AURIGA_PORT")
     if hosted_port:
-        config["port"] = int(hosted_port)
+        config["port"] = hosted_port
+
+    try:
+        port = int(config["port"])
+    except (TypeError, ValueError):
+        raise ValueError("Le port doit etre un entier entre 1 et 65535.")
+    if not 1 <= port <= 65535:
+        raise ValueError("Le port doit etre un entier entre 1 et 65535.")
+    config["port"] = port
+
+    try:
+        refresh_seconds = int(config.get("refresh_seconds", DEFAULTS["refresh_seconds"]))
+    except (TypeError, ValueError):
+        raise ValueError("refresh_seconds doit etre un entier positif.")
+    if refresh_seconds <= 0:
+        raise ValueError("refresh_seconds doit etre un entier positif.")
+    config["refresh_seconds"] = refresh_seconds
 
     return config
 
@@ -183,12 +222,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-XSS-Protection", "1; mode=block")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+            "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; "
+            "form-action 'self'; connect-src 'self'; img-src 'self' data:; "
+            "style-src 'self' 'unsafe-inline'; script-src 'self'",
         )
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         query = dict(urllib.parse.parse_qsl(parsed.query))
+        client_ip = self.client_address[0] if self.client_address else "unknown"
+
+        if parsed.path in ("/api/schedule", "/api/absences"):
+            if not _check_rate_limit(client_ip, scope="api", max_requests=RATE_LIMIT_API_MAX, window=RATE_LIMIT_API_WINDOW):
+                self._send_json(429, {"success": False, "error": "Trop de requetes. Veuillez patienter un instant."})
+                return
 
         if parsed.path == "/api/schedule":
             self._serve_schedule(query.get("email"), force="refresh" in query)
@@ -197,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/health":
             self._send_json(200, {"ok": True})
         elif parsed.path == "/api/sync/status":
-            self._send_json(200, sync_worker.get_status(query.get("id")))
+            self._send_json(200, sync_worker.get_status(query.get("id"), self._device_id()))
         else:
             self._serve_static(parsed.path)
 
@@ -206,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/sync/start":
             client_ip = self.client_address[0] if self.client_address else "unknown"
-            if not _check_rate_limit(client_ip):
+            if not _check_rate_limit(client_ip, scope="sync", max_requests=RATE_LIMIT_SYNC_MAX, window=RATE_LIMIT_SYNC_WINDOW):
                 self._send_json(429, {"success": False, "error": "Trop de requetes. Veuillez patienter 1 minute."})
                 return
 
@@ -215,7 +263,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             try:
-                sync_id = sync_worker.start_sync(payload.get("email"), payload.get("password"))
+                sync_id = sync_worker.start_sync(
+                    payload.get("email"), payload.get("password"), payload.get("deviceId")
+                )
             except sync_worker.SyncBusy as exc:
                 self._send_json(429, {"success": False, "error": str(exc)})
                 return
@@ -229,11 +279,18 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 return
             email = payload.get("email")
-            if email:
-                try:
-                    storage.clear_session(email)
-                except Exception:
-                    pass
+            if not email:
+                self._send_json(400, {"success": False, "error": "Adresse email requise."})
+                return
+            try:
+                clean_email = storage.validate_and_normalize_email(email)
+            except ValueError as exc:
+                self._send_json(400, {"success": False, "error": str(exc)})
+                return
+            if not storage.session_matches_device(clean_email, self._device_id()):
+                self._send_json(401, {"success": False, "error": "Connexion requise pour cet appareil."})
+                return
+            storage.clear_session(clean_email)
             self._send_json(200, {"success": True})
 
         else:
@@ -250,9 +307,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"success": False, "error": "Requete invalide ou trop volumineuse."})
             return None
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             self._send_json(400, {"success": False, "error": "Corps JSON invalide."})
+            return None
+        if not isinstance(payload, dict):
+            self._send_json(400, {"success": False, "error": "Le corps JSON doit etre un objet."})
+            return None
+        return payload
+
+    def _device_id(self):
+        """Identifiant aleatoire du navigateur, transporte hors de l'URL."""
+        value = self.headers.get("X-Auriga-Device-Id")
+        try:
+            return storage.validate_device_id(value)
+        except ValueError:
             return None
 
     def _serve_schedule(self, email, force):
@@ -260,15 +329,22 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"events": [], "error": "Adresse email requise."})
             return
         try:
-            self._send_json(200, get_schedule(self.config, email, force=force))
+            clean_email = storage.validate_and_normalize_email(email)
         except (storage.NoScheduleError, ValueError) as exc:
             self._send_json(404, {
                 "events": [],
                 "error": str(exc),
                 "hint": "Lance une synchronisation pour recuperer ton planning.",
             })
+            return
+        if not storage.session_matches_device(clean_email, self._device_id()):
+            self._send_json(401, {"events": [], "error": "Connexion requise pour cet appareil."})
+            return
+        try:
+            self._send_json(200, get_schedule(self.config, clean_email, force=force))
         except Exception as exc:
-            self._send_json(502, {"events": [], "error": str(exc)})
+            print("[server] lecture planning impossible : %s" % exc, file=sys.stderr)
+            self._send_json(502, {"events": [], "error": "Planning temporairement indisponible."})
 
     def _serve_absences(self, email):
         if not email:
@@ -278,6 +354,9 @@ class Handler(BaseHTTPRequestHandler):
             clean_email = storage.validate_and_normalize_email(email)
         except ValueError as exc:
             self._send_json(400, {"success": False, "error": str(exc)})
+            return
+        if not storage.session_matches_device(clean_email, self._device_id()):
+            self._send_json(401, {"success": False, "error": "Connexion requise pour cet appareil."})
             return
 
         # 1. Tenter de charger le cache officiel sauvegarde
@@ -290,8 +369,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             events = []
 
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        past_events = [e for e in events if e.get("end", "") <= now_iso]
+        now_dt = datetime.now(timezone.utc)
+        past_events = [e for e in events if _is_past_event(e, now_dt)]
 
         presences = sum(1 for e in past_events if e.get("attendance") == "present")
         absences_list = [
@@ -384,6 +463,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Vary", "X-Auriga-Device-Id")
         self._send_security_headers()
         self.end_headers()
         self.wfile.write(body)
@@ -393,11 +473,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    config = load_config()
+    try:
+        config = load_config()
+    except ValueError as exc:
+        print("[config] %s" % exc, file=sys.stderr)
+        return 2
     Handler.config = config
     port = config["port"]
 
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    server.daemon_threads = True
 
     print("Emploi du temps Auriga / Edusign")
     print("  local     : http://localhost:%d" % port)

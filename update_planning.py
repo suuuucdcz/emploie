@@ -13,6 +13,7 @@ import getpass
 import os
 import sys
 import time
+import uuid
 
 import envfile
 import storage
@@ -23,7 +24,7 @@ TERMINAL_STATUSES = ("success", "error", "unknown")
 
 
 def credentials():
-    """(email, mot de passe), depuis l'environnement ou saisis au clavier."""
+    """(email, mot de passe, appareil), depuis l'environnement ou saisis au clavier."""
     envfile.load()
     email = (
         os.environ.get("EDUSIGN_EMAIL")
@@ -40,7 +41,11 @@ def credentials():
         else:
             password = getpass.getpass("Mot de passe Edusign : ")
 
-    return email, password
+    # Le CLI reutilise l'identifiant Edusign deja memorise ou en cree un lors
+    # de la premiere connexion. Il reste ainsi compatible avec la protection
+    # des sessions liees a un appareil du serveur HTTP.
+    _, device_id = storage.get_session(email)
+    return email, password, device_id or str(uuid.uuid4())
 
 
 def main():
@@ -49,8 +54,8 @@ def main():
     print("=" * 55)
 
     try:
-        email, password = credentials()
-        sync_id = sync_worker.start_sync(email, password)
+        email, password, device_id = credentials()
+        sync_id = sync_worker.start_sync(email, password, device_id)
     except (ValueError, sync_worker.SyncBusy) as exc:
         print("Impossible de demarrer : %s" % exc)
         return 1

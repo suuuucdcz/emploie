@@ -4,6 +4,8 @@ Un seul endroit decide ou vivent les fichiers ICS et les jetons de session,
 comment une adresse email est validee et normalisee, et comment on communique avec Supabase.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -11,6 +13,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 
 import envfile
 
@@ -20,8 +23,8 @@ envfile.load()
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(ROOT, "cache")
 
-_EMAIL_RE = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
-_UNSAFE = re.compile(r"[^a-z0-9._-]+")
+_EMAIL_RE = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$")
+_LEGACY_UNSAFE = re.compile(r"[^a-z0-9._-]+")
 
 
 class NoScheduleError(Exception):
@@ -46,9 +49,14 @@ def validate_and_normalize_email(email):
 
 
 def cache_key(email):
-    """Adresse email -> identifiant de fichier sur, sans separateur de chemin."""
+    """Adresse email -> identifiant de fichier stable, non revelateur et sans collision."""
     cleaned = validate_and_normalize_email(email)
-    return _UNSAFE.sub("_", cleaned)
+    return hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+
+
+def _legacy_cache_key(email):
+    """Ancien nom de fichier, conserve uniquement pour lire les caches existants."""
+    return _LEGACY_UNSAFE.sub("_", validate_and_normalize_email(email))
 
 
 def cache_path(email):
@@ -61,6 +69,28 @@ def session_path(email):
 
 def absences_path(email):
     return os.path.join(CACHE_DIR, "%s.absences.json" % cache_key(email))
+
+
+def _legacy_paths(email, suffix):
+    return os.path.join(CACHE_DIR, "%s%s" % (_legacy_cache_key(email), suffix))
+
+
+def validate_device_id(device_id):
+    """Valide un identifiant de navigateur aleatoire au format UUID."""
+    if not isinstance(device_id, str):
+        raise ValueError("Identifiant d'appareil requis.")
+    try:
+        return str(uuid.UUID(device_id))
+    except (ValueError, AttributeError, TypeError):
+        raise ValueError("Identifiant d'appareil invalide.")
+
+
+def session_matches_device_id(expected_device_id, device_id):
+    """Compare deux identifiants d'appareil sans fuite temporelle exploitable."""
+    try:
+        return hmac.compare_digest(str(expected_device_id), validate_device_id(device_id))
+    except (TypeError, ValueError):
+        return False
 
 
 def _atomic_write(target_path, data, mode="w", encoding="utf-8", secure_permissions=False):
@@ -152,10 +182,10 @@ def load_schedule(email):
         except Exception as exc:
             print("[storage] lecture Supabase impossible (%s), repli local" % exc)
 
-    path = cache_path(clean_email)
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            return handle.read(), "cache local"
+    for path in (cache_path(clean_email), _legacy_paths(clean_email, ".ics")):
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                return handle.read(), "cache local"
 
     raise NoScheduleError("Aucun agenda pour cet utilisateur. Veuillez synchroniser.")
 
@@ -165,7 +195,7 @@ def save_schedule(email, ics_content, refresh_token=None, device_id=None):
     clean_email = validate_and_normalize_email(email)
 
     # Sauvegarde locale atomique de secours
-    _atomic_write(cache_path(clean_email), ics_content)
+    _atomic_write(cache_path(clean_email), ics_content, secure_permissions=True)
 
     if refresh_token and device_id:
         try:
@@ -212,17 +242,17 @@ def get_session(email):
             # Colonnes pas encore creees ou erreur reseau : repli local
             pass
 
-    path = session_path(clean_email)
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-                rt = data.get("refresh_token")
-                did = data.get("device_id")
-                if rt and did:
-                    return rt, did
-        except Exception:
-            pass
+    for path in (session_path(clean_email), _legacy_paths(clean_email, ".session.json")):
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                    rt = data.get("refresh_token")
+                    did = data.get("device_id")
+                    if rt and did:
+                        return rt, did
+            except Exception:
+                pass
 
     return None, None
 
@@ -236,13 +266,27 @@ def has_session(email):
         return False
 
 
+def session_matches_device(email, device_id):
+    """Verifie que l'appareil qui appelle l'API possede la session de cet email."""
+    try:
+        _, saved_device_id = get_session(email)
+        return bool(saved_device_id and session_matches_device_id(saved_device_id, device_id))
+    except (TypeError, ValueError):
+        return False
+
+
 def clear_session(email):
     """Supprime la session memorisee (deconnexion)."""
     try:
         clean_email = validate_and_normalize_email(email)
-        path = session_path(clean_email)
-        if os.path.exists(path):
-            os.remove(path)
+        for path in (
+            session_path(clean_email),
+            _legacy_paths(clean_email, ".session.json"),
+            absences_path(clean_email),
+            _legacy_paths(clean_email, ".absences.json"),
+        ):
+            if os.path.exists(path):
+                os.remove(path)
 
         url, api_key = supabase_config()
         if url:
@@ -263,7 +307,7 @@ def save_absences(email, data):
     try:
         clean_email = validate_and_normalize_email(email)
         raw = json.dumps(data, ensure_ascii=False)
-        _atomic_write(absences_path(clean_email), raw, secure_permissions=False)
+        _atomic_write(absences_path(clean_email), raw, secure_permissions=True)
     except Exception as exc:
         print("[storage] erreur sauvegarde absences : %s" % exc)
 
@@ -272,10 +316,10 @@ def load_absences(email):
     """Charge le bilan d'absences depuis le cache, ou None."""
     try:
         clean_email = validate_and_normalize_email(email)
-        path = absences_path(clean_email)
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as handle:
-                return json.load(handle)
+        for path in (absences_path(clean_email), _legacy_paths(clean_email, ".absences.json")):
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    return json.load(handle)
     except Exception:
         pass
     return None

@@ -1,6 +1,7 @@
 /* Emploi du temps Auriga - interface. */
 
-const CACHE_KEY = 'auriga-edt-cache-v1';
+const CACHE_KEY = 'auriga-edt-cache-v2';
+const DEVICE_ID_KEY = 'auriga_device_id';
 const KIND_LABEL = {
   CM: 'CM', TD: 'TD', TP: 'TP', EXAM: 'EXAMEN', PROJET: 'PROJET', AUTRE: 'COURS',
 };
@@ -93,6 +94,38 @@ function getUserEmail() {
   return localStorage.getItem('auriga_email') || '';
 }
 
+function createDeviceId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+  if (!window.crypto || typeof window.crypto.getRandomValues !== 'function') return '';
+  const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function getDeviceId() {
+  try {
+    let deviceId = localStorage.getItem(DEVICE_ID_KEY);
+    if (!deviceId) {
+      deviceId = createDeviceId();
+      if (deviceId) localStorage.setItem(DEVICE_ID_KEY, deviceId);
+    }
+    return deviceId || '';
+  } catch (err) {
+    return '';
+  }
+}
+
+function apiFetch(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const deviceId = getDeviceId();
+  if (deviceId) headers.set('X-Auriga-Device-Id', deviceId);
+  return fetch(url, { ...options, headers });
+}
+
 function attendanceBadge(evt) {
   if (evt.attendance === 'present') {
     return '<span class="badge badge-present">✓ Émargé</span>';
@@ -120,6 +153,7 @@ function hydrate(payload) {
 
   events.sort((a, b) => a._start - b._start);
   state.events = events;
+  state.absences = null;
   state.meta = {
     fetchedAt: payload.fetchedAt,
     source: payload.source,
@@ -136,7 +170,7 @@ function readCache() {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return null;
     const entry = JSON.parse(raw);
-    if (!entry || entry.email !== getUserEmail()) return null;
+    if (!entry || entry.email !== getUserEmail() || entry.deviceId !== getDeviceId()) return null;
     return entry.payload;
   } catch (err) {
     return null;
@@ -145,7 +179,9 @@ function readCache() {
 
 function writeCache(payload) {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ email: getUserEmail(), payload }));
+    localStorage.setItem(CACHE_KEY, JSON.stringify({
+      email: getUserEmail(), deviceId: getDeviceId(), payload,
+    }));
   } catch (err) {
     /* quota plein ou navigation privee */
   }
@@ -176,8 +212,13 @@ async function load({ force = false } = {}) {
   state.loading = true;
   try {
     const url = `/api/schedule?email=${encodeURIComponent(email)}${force ? '&refresh=1' : ''}`;
-    const res = await fetch(url, { cache: 'no-store' });
+    const res = await apiFetch(url, { cache: 'no-store' });
     const payload = await res.json();
+    if (res.status === 401) {
+      localStorage.removeItem(CACHE_KEY);
+      state.events = [];
+      state.absences = null;
+    }
     if (!res.ok && !(payload.events || []).length) throw new Error(payload.error || 'erreur serveur');
     hydrate(payload);
     writeCache(payload);
@@ -619,6 +660,7 @@ function updateLive(now) {
 }
 
 function tick() {
+  if (state.activeTab !== 'planning') return;
   const now = new Date();
   // Un cours vient de commencer ou de finir : la page change de forme.
   if (liveSignature(now) !== state.liveSignature) {
@@ -659,8 +701,17 @@ async function fetchAbsences({ force = false } = {}) {
   if (!email || (state.absences && !force)) return;
   state.absencesLoading = true;
   try {
-    const res = await fetch(`/api/absences?email=${encodeURIComponent(email)}`);
+    const res = await apiFetch(`/api/absences?email=${encodeURIComponent(email)}`);
     const data = await res.json();
+    if (!res.ok) {
+      if (res.status === 401) {
+        localStorage.removeItem(CACHE_KEY);
+        state.events = [];
+        state.meta = { error: 'Connexion requise pour cet appareil.' };
+        openSyncModal({ force: true });
+      }
+      throw new Error(data.error || 'Impossible de charger les absences.');
+    }
     if (data.success && data.statistics) {
       state.absences = data.statistics;
     }
@@ -696,7 +747,17 @@ function renderAssiduite() {
     absencesList: [],
   };
 
-  const ratioVal = typeof stats.presenceRatio === 'number' ? stats.presenceRatio : 100;
+  const statNumber = (value, fallback = 0) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  };
+  const totalCourses = Math.max(0, Math.round(statNumber(stats.totalCourses)));
+  const presences = Math.max(0, Math.round(statNumber(stats.presences)));
+  const absences = Math.max(0, Math.round(statNumber(stats.absences)));
+  const justified = Math.max(0, Math.round(statNumber(stats.justified)));
+  const delays = Math.max(0, Math.round(statNumber(stats.delays)));
+  const ratioVal = Math.min(100, Math.max(0, statNumber(stats.presenceRatio, 100)));
+  const absencesList = Array.isArray(stats.absencesList) ? stats.absencesList : [];
   let verdictClass = 'verdict-good';
   let verdictText = 'Assiduité exemplaire 🎓';
   let circleClass = '';
@@ -726,22 +787,22 @@ function renderAssiduite() {
     <div class="kpi-grid">
       <div class="kpi-card">
         <span class="kpi-title">📚 Total séances</span>
-        <span class="kpi-value">${stats.totalCourses || 0}</span>
+        <span class="kpi-value">${totalCourses}</span>
         <span class="kpi-sub">cours passés</span>
       </div>
       <div class="kpi-card">
         <span class="kpi-title" style="color: #22c55e;">✅ Présences</span>
-        <span class="kpi-value" style="color: #22c55e;">${stats.presences || 0}</span>
+        <span class="kpi-value" style="color: #22c55e;">${presences}</span>
         <span class="kpi-sub">séances émargées</span>
       </div>
       <div class="kpi-card">
         <span class="kpi-title" style="color: #ef4444;">❌ Absences</span>
-        <span class="kpi-value" style="color: #ef4444;">${stats.absences || 0}</span>
-        <span class="kpi-sub">${stats.justified || 0} justifiée(s)</span>
+        <span class="kpi-value" style="color: #ef4444;">${absences}</span>
+        <span class="kpi-sub">${justified} justifiée(s)</span>
       </div>
       <div class="kpi-card">
         <span class="kpi-title" style="color: #f59e0b;">⏳ Retards</span>
-        <span class="kpi-value" style="color: #f59e0b;">${stats.delays || 0}</span>
+        <span class="kpi-value" style="color: #f59e0b;">${delays}</span>
         <span class="kpi-sub">retards constatés</span>
       </div>
     </div>
@@ -749,10 +810,10 @@ function renderAssiduite() {
     <div class="absences-section">
       <div class="absences-section-title">
         <span>Historique des absences</span>
-        <span style="font-size:13px; color:var(--muted); font-weight:500;">${(stats.absencesList || []).length} créneau(x)</span>
+        <span style="font-size:13px; color:var(--muted); font-weight:500;">${absencesList.length} créneau(x)</span>
       </div>
       <div id="absences-list">
-        ${renderAbsencesList(stats.absencesList || [])}
+        ${renderAbsencesList(absencesList)}
       </div>
     </div>
   `;
@@ -871,9 +932,17 @@ function renderParametres() {
 
   const syncNowBtn = document.getElementById('settings-sync-now');
   if (syncNowBtn) {
-    syncNowBtn.addEventListener('click', () => {
+    syncNowBtn.addEventListener('click', async () => {
       if (hasSession) {
-        triggerPullToRefresh();
+        syncNowBtn.disabled = true;
+        const originalHtml = syncNowBtn.innerHTML;
+        syncNowBtn.innerHTML = '<span>Actualisation en direct…</span>';
+        try {
+          await triggerPullToRefresh();
+        } finally {
+          syncNowBtn.disabled = false;
+          syncNowBtn.innerHTML = originalHtml;
+        }
       } else {
         openSyncModal({ force: true });
       }
@@ -891,20 +960,44 @@ function renderParametres() {
   if (logoutBtn) {
     logoutBtn.addEventListener('click', async () => {
       if (!confirm('Voulez-vous vraiment oublier la session sur cet appareil ?')) return;
-      await fetch('/api/session/clear', {
+      await performLogout();
+    });
+  }
+}
+
+async function performLogout() {
+  const email = getUserEmail();
+  if (email) {
+    try {
+      await apiFetch('/api/session/clear', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       });
-      if (state.meta) state.meta.hasSession = false;
-      render();
-    });
+    } catch (err) {}
   }
+  localStorage.removeItem('auriga_email');
+  localStorage.removeItem(DEVICE_ID_KEY);
+  localStorage.removeItem(CACHE_KEY);
+  state.events = [];
+  state.absences = null;
+  state.meta = {
+    hasSession: false,
+    error: 'Veuillez vous connecter.',
+    fetchedAt: null,
+    source: '',
+    stale: false,
+  };
+  if (sync.password) sync.password.value = '';
+  if (sync.email) sync.email.value = '';
+  updateModalFields();
+  render();
 }
 
 /* ------------------------------------------------------------ interactions */
 
 function step(direction) {
+  if (state.activeTab !== 'planning') return;
   const delta = state.view === 'week' ? 7 * direction : direction;
   state.selected = addDays(state.selected, delta);
   render();
@@ -919,6 +1012,7 @@ el.prevBtn.addEventListener('click', () => step(-1));
 el.nextBtn.addEventListener('click', () => step(1));
 
 document.addEventListener('keydown', (event) => {
+  if (state.activeTab !== 'planning') return;
   // Ne pas changer de jour pendant que l'utilisateur deplace le curseur dans
   // un champ, ni pendant que la modal de synchronisation est ouverte.
   const target = event.target;
@@ -934,11 +1028,13 @@ document.addEventListener('keydown', (event) => {
 let touchStartX = 0;
 let touchStartY = 0;
 el.content.addEventListener('touchstart', (event) => {
+  if (state.activeTab !== 'planning') return;
   touchStartX = event.changedTouches[0].clientX;
   touchStartY = event.changedTouches[0].clientY;
 }, { passive: true });
 
 el.content.addEventListener('touchend', (event) => {
+  if (state.activeTab !== 'planning') return;
   const dx = event.changedTouches[0].clientX - touchStartX;
   const dy = event.changedTouches[0].clientY - touchStartY;
   if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6) {
@@ -959,32 +1055,42 @@ async function triggerPullToRefresh() {
   }
 
   try {
-    const res = await fetch('/api/sync/start', {
+    const deviceId = getDeviceId();
+    if (!deviceId) throw new Error('Votre navigateur ne peut pas créer une session sécurisée.');
+    const res = await apiFetch('/api/sync/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password: '' }),
+      body: JSON.stringify({ email, password: '', deviceId }),
     });
     const payload = await res.json();
     if (!payload.success) throw new Error(payload.error || 'echec');
 
-    const checkTimer = setInterval(async () => {
-      try {
-        const pollRes = await fetch(`/api/sync/status?id=${encodeURIComponent(payload.syncId)}`);
-        const st = await pollRes.json();
-        if (st.status === 'success') {
+    await new Promise((resolve) => {
+      let polls = 0;
+      const checkTimer = setInterval(async () => {
+        polls += 1;
+        try {
+          const pollRes = await apiFetch(`/api/sync/status?id=${encodeURIComponent(payload.syncId)}`);
+          const st = await pollRes.json();
+          if (st.status === 'success') {
+            clearInterval(checkTimer);
+            state.absences = null;
+            await load({ force: true });
+            updateModalFields();
+            resolve();
+          } else if (st.status === 'error' || polls > 40) {
+            clearInterval(checkTimer);
+            if (st.status === 'error') openSyncModal({ force: true });
+            resolve();
+          }
+        } catch (e) {
           clearInterval(checkTimer);
-          await load({ force: true });
-          updateModalFields();
-        } else if (st.status === 'error') {
-          clearInterval(checkTimer);
-          openSyncModal({ force: true });
+          resolve();
         }
-      } catch (e) {
-        clearInterval(checkTimer);
-      }
-    }, 600);
+      }, 600);
+    });
   } catch (err) {
-    load({ force: true });
+    await load({ force: true });
   }
 }
 
@@ -1049,10 +1155,16 @@ function updateModalFields() {
   }
 }
 
-function openSyncModal({ force = false } = {}) {
+function openSyncModal({ force = false, showPassword = false } = {}) {
   if (syncDismissed && !force) return;
   if (force) syncDismissed = false;
   updateModalFields();
+  if (showPassword) {
+    sync.password.hidden = false;
+    sync.togglePwdBtn.hidden = true;
+    sync.startBtn.textContent = 'Synchroniser maintenant';
+    sync.password.focus();
+  }
   sync.modal.hidden = false;
 }
 
@@ -1119,7 +1231,7 @@ function applySyncState(st) {
 
 function pollSync() {
   if (!syncId) return;
-  fetch(`/api/sync/status?id=${encodeURIComponent(syncId)}`)
+  apiFetch(`/api/sync/status?id=${encodeURIComponent(syncId)}`)
     .then((res) => res.json())
     .then(applySyncState)
     .catch(() => { sync.status.textContent = 'Erreur de connexion au serveur\u2026'; });
@@ -1143,10 +1255,12 @@ async function startSync() {
   stopPolling();
 
   try {
-    const res = await fetch('/api/sync/start', {
+    const deviceId = getDeviceId();
+    if (!deviceId) throw new Error('Votre navigateur ne peut pas créer une session sécurisée.');
+    const res = await apiFetch('/api/sync/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password: password || '' }),
+      body: JSON.stringify({ email, password: password || '', deviceId }),
     });
     const payload = await res.json();
     if (!payload.success) {
@@ -1192,27 +1306,8 @@ sync.email.addEventListener('input', () => {
 
 if (sync.logoutBtn) {
   sync.logoutBtn.addEventListener('click', async () => {
-    const email = sync.email.value.trim();
-    if (email) {
-      try {
-        await fetch('/api/session/clear', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email }),
-        });
-      } catch (err) {}
-    }
-    localStorage.removeItem('auriga_email');
-    localStorage.removeItem(CACHE_KEY);
-    state.events = [];
-    if (state.meta) {
-      state.meta.hasSession = false;
-      state.meta.error = 'Veuillez vous connecter.';
-    }
-    sync.password.value = '';
-    updateModalFields();
-    sync.status.textContent = 'Session oubli\u00E9e. Vous \u00EAtes d\u00E9connect\u00E9.';
-    render();
+    await performLogout();
+    sync.status.textContent = 'Session oubliée. Vous êtes déconnecté.';
   });
 }
 

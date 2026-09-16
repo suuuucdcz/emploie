@@ -4,7 +4,7 @@ Une PWA ultra-rapide pour consulter son emploi du temps IPSA sur téléphone et 
 
 L'application communique directement avec l'API REST Edusign :
 1. **Connexion directe** : Récupération instantanée du token d'accès (< 0.2s) sans passer par Microsoft SSO ni A2F.
-2. **Session persistante (Option B)** : Le `refresh_token` est conservé de façon sécurisée (Supabase ou cache local chiffré/protégé). L'actualisation de l'agenda se fait ensuite **en 1 clic sans retaper son mot de passe**.
+2. **Session persistante (Option B)** : Le `refresh_token` est conservé de façon sécurisée (Supabase ou cache local protégé par les permissions du système). L'actualisation de l'agenda se fait ensuite **en 1 clic sans retaper son mot de passe**.
 3. **Synchronisation annuelle complète** : L'intégralité de l'année scolaire (plus de 180 cours) et la liste des professeurs sont téléchargées en un seul appel (< 0.5s).
 4. **Zéro dépendance externe** : 100% bibliothèque standard Python (aucun navigateur Chromium ni Playwright requis, consommation RAM minime ~30 Mo).
 
@@ -60,6 +60,7 @@ create table if not exists schedules (
 
 - **Mots de passe** : Le mot de passe ne transite qu'en mémoire vive lors de la connexion initiale vers l'API officielle Edusign en HTTPS. Il n'est **jamais** écrit sur disque, jamais journalisé et jamais renvoyé au navigateur.
 - **Sessions & Tokens (Option B)** : Seuls le `refresh_token` et le `device_id` sont conservés. L'utilisateur peut à tout moment révoquer et effacer sa session via le bouton *"Oublier la session"* dans l'interface ou via `POST /api/session/clear`.
+- **Accès par appareil** : Les endpoints de planning, d'assiduité et de déconnexion sont liés à un UUID aléatoire conservé uniquement dans le navigateur. Connaître une adresse e-mail ne suffit donc pas à lire ou effacer les données. Sur un nouvel appareil, une nouvelle connexion Edusign par mot de passe est requise.
 - **Validation stricte des entrées** : Toutes les adresses email sont strictement validées (regex RFC) et normalisées en minuscules pour interdire toute injection PostgREST ou path traversal.
 - **En-têtes HTTP de durcissement** : `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`.
 - **Limiteur de débit (Rate Limiting)** : Protection intégrée contre le bruteforce ou le spam d'actualisations.
