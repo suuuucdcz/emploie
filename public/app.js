@@ -589,7 +589,9 @@ function renderStatus() {
     }
   }
   parts.push(`${state.events.length} cours`);
-  parts.push('Edusign');
+
+  const hasSession = Boolean(state.meta.hasSession);
+  parts.push(hasSession ? '\uD83D\uDFE2 Session active' : '\uD83D\uDFE0 Session \u00E0 renouveler');
 
   el.status.textContent = parts.join(' \u00B7 ');
   el.status.className = state.meta.stale ? 'warn' : 'ok';
@@ -668,6 +670,7 @@ const POLL_MS = 600;
 
 const sync = {
   modal: document.getElementById('sync-modal'),
+  sessionBadge: document.getElementById('sync-session-badge'),
   hint: document.getElementById('sync-hint'),
   startBtn: document.getElementById('sync-start-btn'),
   togglePwdBtn: document.getElementById('sync-toggle-pwd'),
@@ -686,18 +689,27 @@ let syncId = null;
 
 function updateModalFields() {
   const hasSession = Boolean(state.meta && state.meta.hasSession);
+  if (sync.sessionBadge) {
+    if (hasSession) {
+      sync.sessionBadge.className = 'session-badge active';
+      sync.sessionBadge.textContent = '\uD83D\uDFE2 Session active (1 clic pr\u00EAt)';
+    } else {
+      sync.sessionBadge.className = 'session-badge expired';
+      sync.sessionBadge.textContent = '\uD83D\uDFE0 Session \u00E0 renouveler';
+    }
+  }
   if (hasSession) {
     sync.password.hidden = true;
     sync.togglePwdBtn.hidden = false;
     if (sync.logoutBtn) sync.logoutBtn.hidden = false;
     sync.startBtn.textContent = 'Mettre \u00E0 jour en 1 clic';
-    if (sync.hint) sync.hint.textContent = 'Session active : actualisation imm\u00E9diate sans mot de passe.';
+    if (sync.hint) sync.hint.textContent = 'Session m\u00E9moris\u00E9e : actualisation imm\u00E9diate sans mot de passe.';
   } else {
     sync.password.hidden = false;
     sync.togglePwdBtn.hidden = true;
     if (sync.logoutBtn) sync.logoutBtn.hidden = true;
     sync.startBtn.textContent = 'Synchroniser maintenant';
-    if (sync.hint) sync.hint.textContent = 'Connexion directe et instantan\u00E9e \u00E0 l\'API Edusign (sans A2F).';
+    if (sync.hint) sync.hint.textContent = 'Entrez votre mot de passe pour d\u00E9marrer ou renouveler votre session.';
   }
 }
 
@@ -740,6 +752,10 @@ function applySyncState(st) {
       finishSync('Termin\u00E9 ! ' + (st.detail || 'Le planning est \u00E0 jour.'), { reload: true });
       break;
     case 'error':
+      if (sync.sessionBadge) {
+        sync.sessionBadge.className = 'session-badge expired';
+        sync.sessionBadge.textContent = '\uD83D\uDFE0 Session expir\u00E9e';
+      }
       if (sync.password.hidden) {
         sync.password.hidden = false;
         sync.togglePwdBtn.hidden = true;
