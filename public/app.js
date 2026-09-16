@@ -24,8 +24,6 @@ const el = {
   month: document.getElementById('month-label'),
   strip: document.getElementById('weekstrip'),
   content: document.getElementById('content'),
-  todayBtn: document.getElementById('today-btn'),
-  refresh: document.getElementById('refresh'),
   viewToggle: document.getElementById('view-toggle'),
   prevBtn: document.getElementById('prev-btn'),
   nextBtn: document.getElementById('next-btn'),
@@ -95,8 +93,7 @@ function getUserEmail() {
   return localStorage.getItem('auriga_email') || '';
 }
 
-function attendanceBadge(evt, now = new Date()) {
-  const isPast = evt._end <= now;
+function attendanceBadge(evt) {
   if (evt.attendance === 'present') {
     return '<span class="badge badge-present">✓ Émargé</span>';
   }
@@ -106,7 +103,7 @@ function attendanceBadge(evt, now = new Date()) {
   if (evt.isJustified) {
     return '<span class="badge badge-justified">📋 Justifié</span>';
   }
-  if (evt.attendance === 'absent' || (isPast && evt.attendance !== 'present')) {
+  if (evt.attendance === 'absent') {
     return '<span class="badge badge-absent">✕ Absent</span>';
   }
   return '';
@@ -177,7 +174,6 @@ async function load({ force = false } = {}) {
   // requetes concurrentes.
   lastLoadAt = Date.now();
   state.loading = true;
-  el.refresh.classList.add('spinning');
   try {
     const url = `/api/schedule?email=${encodeURIComponent(email)}${force ? '&refresh=1' : ''}`;
     const res = await fetch(url, { cache: 'no-store' });
@@ -197,7 +193,6 @@ async function load({ force = false } = {}) {
     }
   } finally {
     state.loading = false;
-    el.refresh.classList.remove('spinning');
     render();
   }
 }
@@ -648,8 +643,6 @@ function switchTab(tab) {
   el.prevBtn.hidden = !isPlanning;
   el.nextBtn.hidden = !isPlanning;
   el.viewToggle.hidden = !isPlanning;
-  el.todayBtn.hidden = !isPlanning;
-  el.refresh.hidden = !isPlanning;
 
   render();
   window.scrollTo({ top: 0, behavior: 'instant' });
@@ -917,14 +910,6 @@ function step(direction) {
   render();
 }
 
-el.todayBtn.addEventListener('click', () => {
-  state.selected = startOfDay(new Date());
-  render();
-});
-
-// Le bouton refresh ouvre la modal de synchronisation
-el.refresh.addEventListener('click', () => openSyncModal({ force: true }));
-
 el.viewToggle.addEventListener('click', () => {
   state.view = state.view === 'week' ? 'day' : 'week';
   render();
@@ -973,8 +958,6 @@ async function triggerPullToRefresh() {
     return;
   }
 
-  el.refresh.classList.add('spinning');
-
   try {
     const res = await fetch('/api/sync/start', {
       method: 'POST',
@@ -991,20 +974,16 @@ async function triggerPullToRefresh() {
         if (st.status === 'success') {
           clearInterval(checkTimer);
           await load({ force: true });
-          el.refresh.classList.remove('spinning');
           updateModalFields();
         } else if (st.status === 'error') {
           clearInterval(checkTimer);
-          el.refresh.classList.remove('spinning');
           openSyncModal({ force: true });
         }
       } catch (e) {
         clearInterval(checkTimer);
-        el.refresh.classList.remove('spinning');
       }
     }, 600);
   } catch (err) {
-    el.refresh.classList.remove('spinning');
     load({ force: true });
   }
 }

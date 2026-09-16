@@ -82,12 +82,13 @@ body {
 
 .topbar h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  text-align: center;
-  /* Doit pouvoir retrecir : sinon l'entete deborde de quelques pixels sur un
-     ecran de 375 px et la page gagne une barre de defilement horizontale. */
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   flex: 1 1 auto;
   min-width: 0;
 }
