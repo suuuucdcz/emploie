@@ -28,6 +28,16 @@ SUMMARY:Test\r
 END:VEVENT\r
 END:VCALENDAR\r
 """
+FUTURE_ABSENT_ICS = """BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+UID:future-absence\r
+DTSTART:20990101T080000Z\r
+DTEND:20990101T100000Z\r
+SUMMARY:Cours futur\r
+X-EDUSIGN-ATTENDANCE:ABSENT\r
+END:VEVENT\r
+END:VCALENDAR\r
+"""
 
 
 class LocalStorageTestCase(unittest.TestCase):
@@ -83,6 +93,47 @@ class LocalStorageTestCase(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(len(payload["events"]), 1)
             self.assertEqual(response.getheader("Vary"), "X-Auriga-Device-Id")
+            conn.close()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=3)
+            server.Handler.config = original_config
+            server._caches.clear()
+
+    def test_absence_endpoint_excludes_upcoming_courses(self):
+        storage.save_schedule(EMAIL, FUTURE_ABSENT_ICS, refresh_token="secret", device_id=DEVICE_ID)
+        storage.save_absences(EMAIL, {
+            "statistics": {
+                "totalCourses": 99,
+                "presences": 0,
+                "presenceRatio": 0,
+                "absences": 99,
+                "justified": 99,
+                "delays": 2,
+                "pending": 3,
+            },
+            "absences": [{"title": "Cours futur", "start": "2099-01-01T08:00:00Z"}],
+        })
+        server._caches.clear()
+        original_config = server.Handler.config
+        server.Handler.config = dict(server.DEFAULTS)
+        httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        httpd.daemon_threads = True
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            path = "/api/absences?" + urlencode({"email": EMAIL})
+            conn = HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=3)
+            conn.request("GET", path, headers={"X-Auriga-Device-Id": DEVICE_ID})
+            response = conn.getresponse()
+            payload = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["statistics"]["totalCourses"], 0)
+            self.assertEqual(payload["statistics"]["absences"], 0)
+            self.assertEqual(payload["statistics"]["absencesList"], [])
+            self.assertEqual(payload["statistics"]["delays"], 2)
+            self.assertEqual(payload["statistics"]["pending"], 3)
             conn.close()
         finally:
             httpd.shutdown()

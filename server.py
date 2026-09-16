@@ -400,15 +400,16 @@ class Handler(BaseHTTPRequestHandler):
             ],
         }
 
-        # Fusion si l'API Edusign a renvoye des donnees directes
+        # L'API renvoie parfois un bilan global qui inclut des creneaux a
+        # venir. Les compteurs lies a l'assiduite restent donc derives du
+        # planning filtre ci-dessus ; seules les donnees non calculables localement
+        # (retards et elements en attente) sont reprises du cache officiel.
         if isinstance(cached, dict):
             c_stats = cached.get("statistics") if isinstance(cached.get("statistics"), dict) else cached
             if isinstance(c_stats, dict):
-                for k in ("totalCourses", "presences", "presenceRatio", "absences", "justified", "delays", "pending"):
+                for k in ("delays", "pending"):
                     if c_stats.get(k) is not None:
                         stats[k] = c_stats[k]
-            if "absences" in cached and isinstance(cached["absences"], list):
-                stats["absencesList"] = cached["absences"]
 
         self._send_json(200, {"success": True, "statistics": stats})
 

@@ -125,7 +125,17 @@ function apiFetch(url, options = {}) {
   return fetch(url, { ...options, headers });
 }
 
-function attendanceBadge(evt) {
+function attendanceBadge(evt, now) {
+  const hasEnded = evt._end <= now;
+  const isOngoing = evt._start <= now && !hasEnded;
+
+  // Edusign peut envoyer `STUDENT_PRESENCE = 0` avant le cours. Ce signal ne
+  // doit jamais etre traduit en absence tant que le creneau n'est pas termine.
+  if (!hasEnded) {
+    return evt.canSign && isOngoing
+      ? '<span class="badge badge-sign">✍️ À émarger</span>'
+      : '';
+  }
   if (evt.attendance === 'present') {
     return '<span class="badge badge-present">✓ Émargé</span>';
   }
@@ -487,7 +497,7 @@ function renderWeek() {
 function slot(evt, first, now) {
   const ongoing = evt._start <= now && now < evt._end;
   const past = evt._end <= now;
-  const isSigned = evt.attendance === 'present';
+  const isSigned = past && evt.attendance === 'present';
   const top = hourOf(evt._start) - first;
   const height = Math.max(endHourOf(evt) - hourOf(evt._start), 0.42);
 
@@ -498,7 +508,7 @@ function slot(evt, first, now) {
   node.style.top = `calc(${top.toFixed(3)} * var(--hour))`;
   node.style.height = `calc(${height.toFixed(3)} * var(--hour) - 3px)`;
 
-  const badgeIcon = isSigned ? ' ✓' : (evt.canSign ? ' ✍️' : '');
+  const badgeIcon = isSigned ? ' ✓' : (ongoing && evt.canSign ? ' ✍️' : '');
 
   node.innerHTML = `
     <span class="slot-kind">${KIND_LABEL[evt.kind] || 'COURS'}${badgeIcon}</span>
@@ -545,7 +555,7 @@ function card(evt, now = new Date()) {
       <div class="card-badges">
         <span class="badge">${KIND_LABEL[evt.kind] || 'COURS'}</span>
         ${ongoing ? '<span class="badge now-badge">EN COURS</span>' : ''}
-        ${attendanceBadge(evt)}
+        ${attendanceBadge(evt, now)}
       </div>
       <h2 class="card-title">${escapeHtml(evt.title || evt.rawTitle || 'Cours')}</h2>
       <div class="card-meta">${meta.join('')}</div>
