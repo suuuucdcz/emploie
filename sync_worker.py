@@ -70,7 +70,7 @@ def get_status(sync_id, device_id=None):
         if state is None or not storage.session_matches_device_id(state.get("device_id"), device_id):
             return {"status": "unknown"}
         return {k: v for k, v in state.items()
-                if k not in ("email", "device_id", "created_at", "updated_at", "timed_out")}
+                if k not in ("email", "device_id", "updated_at", "timed_out")}
 
 
 def _active_count_locked():
@@ -112,9 +112,6 @@ def _run_sync(sync_id, email, password, device_id):
             sync_id,
             status="success",
             detail=detail_msg,
-            count=count,
-            destination=destination,
-            user=user,
         )
         print(f"[sync {sync_id[:8]}] termine : {count} cours -> {destination}")
     except edusign_client.EdusignError as exc:
@@ -153,7 +150,6 @@ def start_sync(email, password=None, device_id=None):
             "error_msg": None,
             "email": clean_email,
             "device_id": clean_device_id,
-            "created_at": time.time(),
             "updated_at": time.time(),
         }
 

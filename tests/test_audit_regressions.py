@@ -109,11 +109,11 @@ class SyncAndCalendarTestCase(unittest.TestCase):
             "error_msg": None,
             "email": EMAIL,
             "device_id": DEVICE_ID,
-            "created_at": time.time() - sync_worker.MAX_ACTIVE_TIMEOUT - 1,
             "updated_at": time.time() - sync_worker.MAX_ACTIVE_TIMEOUT - 1,
         }
         self.assertEqual(sync_worker.get_status(sync_id, OTHER_DEVICE_ID), {"status": "unknown"})
         status = sync_worker.get_status(sync_id, DEVICE_ID)
+        self.assertEqual(set(status), {"status", "detail", "error_msg"})
         self.assertEqual(status["status"], "error")
         self.assertIn("timeout", status["error_msg"])
 

@@ -138,14 +138,6 @@ body {
   background: var(--accent-soft);
   box-shadow: none;
 }
-/* L'icone n'est plus une fleche circulaire : une pulsation marche avec
-   n'importe quel dessin, la rotation non. */
-.btn-ghost.spinning svg { animation: pulse 1s ease-in-out infinite; }
-
-@keyframes pulse {
-  50% { opacity: .35; }
-}
-
 /* ------------------------------------------------------------ weekstrip */
 
 .weekstrip {

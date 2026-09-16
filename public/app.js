@@ -28,7 +28,6 @@ const el = {
   viewToggle: document.getElementById('view-toggle'),
   prevBtn: document.getElementById('prev-btn'),
   nextBtn: document.getElementById('next-btn'),
-  tabbar: document.getElementById('tabbar'),
   tabPlanning: document.getElementById('tab-btn-planning'),
   tabAssiduite: document.getElementById('tab-btn-assiduite'),
   tabParametres: document.getElementById('tab-btn-parametres'),
@@ -546,7 +545,7 @@ function card(evt, now = new Date()) {
       <div class="card-badges">
         <span class="badge">${KIND_LABEL[evt.kind] || 'COURS'}</span>
         ${ongoing ? '<span class="badge now-badge">EN COURS</span>' : ''}
-        ${attendanceBadge(evt, now)}
+        ${attendanceBadge(evt)}
       </div>
       <h2 class="card-title">${escapeHtml(evt.title || evt.rawTitle || 'Cours')}</h2>
       <div class="card-meta">${meta.join('')}</div>
@@ -687,7 +686,7 @@ function switchTab(tab) {
   el.viewToggle.hidden = !isPlanning;
 
   render();
-  window.scrollTo({ top: 0, behavior: 'instant' });
+  window.scrollTo({ top: 0, behavior: 'auto' });
 }
 
 el.tabPlanning.addEventListener('click', () => switchTab('planning'));
@@ -696,9 +695,9 @@ el.tabParametres.addEventListener('click', () => switchTab('parametres'));
 
 /* ------------------------------------------------------------ page assiduite */
 
-async function fetchAbsences({ force = false } = {}) {
+async function fetchAbsences() {
   const email = getUserEmail();
-  if (!email || (state.absences && !force)) return;
+  if (!email || state.absences) return;
   state.absencesLoading = true;
   try {
     const res = await apiFetch(`/api/absences?email=${encodeURIComponent(email)}`);
@@ -715,8 +714,8 @@ async function fetchAbsences({ force = false } = {}) {
     if (data.success && data.statistics) {
       state.absences = data.statistics;
     }
-  } catch (err) {
-    console.warn('Impossible de charger les absences:', err);
+  } catch {
+    // La vue conserve alors le calcul local de repli.
   } finally {
     state.absencesLoading = false;
     if (state.activeTab === 'assiduite') render();
@@ -1055,42 +1054,18 @@ async function triggerPullToRefresh() {
   }
 
   try {
-    const deviceId = getDeviceId();
-    if (!deviceId) throw new Error('Votre navigateur ne peut pas créer une session sécurisée.');
-    const res = await apiFetch('/api/sync/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password: '', deviceId }),
-    });
-    const payload = await res.json();
-    if (!payload.success) throw new Error(payload.error || 'echec');
-
-    await new Promise((resolve) => {
-      let polls = 0;
-      const checkTimer = setInterval(async () => {
-        polls += 1;
-        try {
-          const pollRes = await apiFetch(`/api/sync/status?id=${encodeURIComponent(payload.syncId)}`);
-          const st = await pollRes.json();
-          if (st.status === 'success') {
-            clearInterval(checkTimer);
-            state.absences = null;
-            await load({ force: true });
-            updateModalFields();
-            resolve();
-          } else if (st.status === 'error' || polls > 40) {
-            clearInterval(checkTimer);
-            if (st.status === 'error') openSyncModal({ force: true });
-            resolve();
-          }
-        } catch (e) {
-          clearInterval(checkTimer);
-          resolve();
-        }
-      }, 600);
-    });
+    const status = await waitForSync(await requestSync(email), 40);
+    if (status.status === 'success') {
+      state.absences = null;
+      await load({ force: true });
+      updateModalFields();
+      return;
+    }
+    throw new Error(status.error_msg || 'La synchronisation n’a pas abouti.');
   } catch (err) {
-    await load({ force: true });
+    openSyncModal({ force: true });
+    sync.status.className = 'sync-status error';
+    sync.status.textContent = `Erreur : ${err.message}`;
   }
 }
 
@@ -1128,6 +1103,41 @@ sync.email.value = getUserEmail();
 let syncDismissed = false;
 let syncTimer = null;
 let syncId = null;
+let syncPollInFlight = false;
+
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+async function requestSync(email, password = '') {
+  const deviceId = getDeviceId();
+  if (!deviceId) throw new Error('Votre navigateur ne peut pas créer une session sécurisée.');
+
+  const response = await apiFetch('/api/sync/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, deviceId }),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.success || !payload.syncId) {
+    throw new Error(payload.error || 'Impossible de démarrer la synchronisation.');
+  }
+  return payload.syncId;
+}
+
+async function getSyncStatus(id) {
+  const response = await apiFetch(`/api/sync/status?id=${encodeURIComponent(id)}`);
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || 'État de synchronisation indisponible.');
+  return payload;
+}
+
+async function waitForSync(id, maxPolls) {
+  for (let polls = 0; polls < maxPolls; polls += 1) {
+    await delay(POLL_MS);
+    const status = await getSyncStatus(id);
+    if (['success', 'error', 'unknown'].includes(status.status)) return status;
+  }
+  return { status: 'timeout' };
+}
 
 function updateModalFields() {
   const hasSession = Boolean(state.meta && state.meta.hasSession);
@@ -1155,16 +1165,18 @@ function updateModalFields() {
   }
 }
 
+function revealPasswordInput({ focus = false } = {}) {
+  sync.password.hidden = false;
+  sync.togglePwdBtn.hidden = true;
+  sync.startBtn.textContent = 'Synchroniser maintenant';
+  if (focus) sync.password.focus();
+}
+
 function openSyncModal({ force = false, showPassword = false } = {}) {
   if (syncDismissed && !force) return;
   if (force) syncDismissed = false;
   updateModalFields();
-  if (showPassword) {
-    sync.password.hidden = false;
-    sync.togglePwdBtn.hidden = true;
-    sync.startBtn.textContent = 'Synchroniser maintenant';
-    sync.password.focus();
-  }
+  if (showPassword) revealPasswordInput({ focus: true });
   sync.modal.hidden = false;
 }
 
@@ -1176,6 +1188,14 @@ function closeSyncModal() {
 function stopPolling() {
   clearInterval(syncTimer);
   syncTimer = null;
+  syncId = null;
+}
+
+function startPolling(id) {
+  stopPolling();
+  syncId = id;
+  pollSync();
+  syncTimer = setInterval(pollSync, POLL_MS);
 }
 
 function finishSync(message, { reload = false } = {}) {
@@ -1213,12 +1233,7 @@ function applySyncState(st) {
         sync.sessionBadge.textContent = '\uD83D\uDFE0 Session \u00E0 renouveler';
       }
       sync.status.className = 'sync-status error';
-      if (sync.password.hidden) {
-        sync.password.hidden = false;
-        sync.togglePwdBtn.hidden = true;
-        sync.startBtn.textContent = 'Synchroniser maintenant';
-        sync.password.focus();
-      }
+      if (sync.password.hidden) revealPasswordInput({ focus: true });
       finishSync('Erreur : ' + (st.error_msg || 'Identifiants ou connexion impossible'));
       break;
     case 'unknown':
@@ -1229,12 +1244,18 @@ function applySyncState(st) {
   }
 }
 
-function pollSync() {
-  if (!syncId) return;
-  apiFetch(`/api/sync/status?id=${encodeURIComponent(syncId)}`)
-    .then((res) => res.json())
-    .then(applySyncState)
-    .catch(() => { sync.status.textContent = 'Erreur de connexion au serveur\u2026'; });
+async function pollSync() {
+  const id = syncId;
+  if (!id || syncPollInFlight) return;
+  syncPollInFlight = true;
+  try {
+    const status = await getSyncStatus(id);
+    if (id === syncId) applySyncState(status);
+  } catch (err) {
+    if (id === syncId) sync.status.textContent = 'Erreur de connexion au serveur\u2026';
+  } finally {
+    syncPollInFlight = false;
+  }
 }
 
 async function startSync() {
@@ -1249,44 +1270,25 @@ async function startSync() {
     return;
   }
 
-  localStorage.setItem('auriga_email', email);
   sync.status.textContent = 'Connexion \u00E0 Edusign\u2026';
+  sync.status.className = 'sync-status';
   sync.startBtn.disabled = true;
   stopPolling();
 
   try {
-    const deviceId = getDeviceId();
-    if (!deviceId) throw new Error('Votre navigateur ne peut pas créer une session sécurisée.');
-    const res = await apiFetch('/api/sync/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password: password || '', deviceId }),
-    });
-    const payload = await res.json();
-    if (!payload.success) {
-      if (sync.password.hidden) {
-        sync.password.hidden = false;
-        sync.togglePwdBtn.hidden = true;
-        sync.startBtn.textContent = 'Synchroniser maintenant';
-        sync.password.focus();
-      }
-      throw new Error(payload.error || 'demarrage impossible');
-    }
-
-    syncId = payload.syncId;
+    const id = await requestSync(email, password);
+    localStorage.setItem('auriga_email', email);
     sync.password.value = '';
-    syncTimer = setInterval(pollSync, POLL_MS);
+    startPolling(id);
   } catch (err) {
+    if (sync.password.hidden) revealPasswordInput({ focus: true });
     finishSync('Erreur : ' + err.message);
   }
 }
 
 if (sync.togglePwdBtn) {
   sync.togglePwdBtn.addEventListener('click', () => {
-    sync.password.hidden = false;
-    sync.togglePwdBtn.hidden = true;
-    sync.startBtn.textContent = 'Synchroniser maintenant';
-    sync.password.focus();
+    revealPasswordInput({ focus: true });
   });
 }
 
@@ -1294,10 +1296,8 @@ sync.email.addEventListener('input', () => {
   const currentEmail = sync.email.value.trim().toLowerCase();
   const savedEmail = getUserEmail().toLowerCase();
   if (currentEmail && currentEmail !== savedEmail) {
-    sync.password.hidden = false;
-    sync.togglePwdBtn.hidden = true;
+    revealPasswordInput();
     if (sync.logoutBtn) sync.logoutBtn.hidden = true;
-    sync.startBtn.textContent = 'Synchroniser maintenant';
     if (sync.hint) sync.hint.textContent = 'Connexion directe et instantan\u00E9e \u00E0 l\'API Edusign (sans A2F).';
   } else {
     updateModalFields();

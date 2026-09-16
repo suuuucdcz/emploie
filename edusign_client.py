@@ -231,17 +231,13 @@ def sync_schedule(email, password=None, refresh_token=None, device_id=None, is_c
     3. Sauvegarde le planning et les jetons de session mis a jour.
     """
     email = storage.validate_and_normalize_email(email)
-    token = None
-    new_refresh_token = None
     user = {}
-    auth_method = "token"
 
     # Un mot de passe fourni force une nouvelle connexion : autrement un
     # changement d'appareil reutiliserait silencieusement la session precedente.
     if password:
         _check_cancelled(is_cancelled)
         token, new_refresh_token, device_id, user = login(email, password, device_id)
-        auth_method = "credentials"
     else:
         if not refresh_token or not device_id:
             refresh_token, device_id = storage.get_session(email)
@@ -283,6 +279,5 @@ def sync_schedule(email, password=None, refresh_token=None, device_id=None, is_c
         "success": True,
         "count": len(events),
         "destination": destination,
-        "authMethod": auth_method,
         "user": user,
     }
