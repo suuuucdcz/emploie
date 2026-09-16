@@ -650,8 +650,57 @@ el.content.addEventListener('touchend', (event) => {
   const dy = event.changedTouches[0].clientY - touchStartY;
   if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.6) {
     step(dx < 0 ? 1 : -1);
+  } else if (dy > 80 && Math.abs(dy) > Math.abs(dx) * 1.8 && window.scrollY <= 15) {
+    triggerPullToRefresh();
   }
 }, { passive: true });
+
+async function triggerPullToRefresh() {
+  const email = getUserEmail();
+  if (!email || state.loading) return;
+
+  const hasSession = Boolean(state.meta && state.meta.hasSession);
+  if (!hasSession) {
+    openSyncModal({ force: true });
+    return;
+  }
+
+  el.refresh.classList.add('spinning');
+  el.status.textContent = 'Actualisation en direct avec Edusign\u2026';
+
+  try {
+    const res = await fetch('/api/sync/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password: '' }),
+    });
+    const payload = await res.json();
+    if (!payload.success) throw new Error(payload.error || 'echec');
+
+    const checkTimer = setInterval(async () => {
+      try {
+        const pollRes = await fetch(`/api/sync/status?id=${encodeURIComponent(payload.syncId)}`);
+        const st = await pollRes.json();
+        if (st.status === 'success') {
+          clearInterval(checkTimer);
+          await load({ force: true });
+          el.refresh.classList.remove('spinning');
+          updateModalFields();
+        } else if (st.status === 'error') {
+          clearInterval(checkTimer);
+          el.refresh.classList.remove('spinning');
+          openSyncModal({ force: true });
+        }
+      } catch (e) {
+        clearInterval(checkTimer);
+        el.refresh.classList.remove('spinning');
+      }
+    }, 600);
+  } catch (err) {
+    el.refresh.classList.remove('spinning');
+    load({ force: true });
+  }
+}
 
 // Rythme du direct : on redessine seulement si un cours a change d'etat,
 // sinon on se contente de faire avancer la barre et les compteurs.

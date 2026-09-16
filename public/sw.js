@@ -1,7 +1,7 @@
 /* Service worker : coquille applicative en cache, agenda en reseau d'abord. */
 
-const SHELL_CACHE = 'auriga-shell-v13';
-const DATA_CACHE = 'auriga-data-v13';
+const SHELL_CACHE = 'auriga-shell-v14';
+const DATA_CACHE = 'auriga-data-v14';
 
 const OFFLINE_PAYLOAD = JSON.stringify({ events: [], error: 'hors ligne', stale: true });
 
